@@ -15,6 +15,7 @@ This implementation is based on:
 ## Implemented Features
 
 * Complete training pipeline for 3D Gaussians
+* Chart of train loss
 * PLY export for intermediate results visualization
 * Support for COLMAP formatted datasets
 * Support for NerfStudio formatted datasets
@@ -22,6 +23,7 @@ This implementation is based on:
 ## Upcoming Features
 
 * Gaussian pruning and splitting operations
+* Checkpoint visualization
 * Memory optimization
 
 ## Requirements
