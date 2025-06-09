@@ -25,6 +25,7 @@ This implementation is based on:
 * Gaussian pruning and splitting operations
 * Checkpoint visualization
 * Memory optimization
+* Use ARKit depth as dataset
 
 ## Requirements
 
