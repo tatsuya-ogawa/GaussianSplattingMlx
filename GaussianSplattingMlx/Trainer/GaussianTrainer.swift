@@ -59,7 +59,7 @@ class GaussianTrainer {
     var lambda_dssim: Float = 0.2
     var lambda_depth: Float = 0.0
     var split_and_prune_per_iteration: Int = 100
-    var save_snapshot_per_iteration: Int = 1000
+    var save_snapshot_per_iteration: Int
     var iterationCount: Int
     var outputDirectoryURL: URL?
     var cacheLimit: Int
@@ -69,7 +69,8 @@ class GaussianTrainer {
         gaussRender: GaussianRenderer,
         iterationCount: Int,
         cacheLimit: Int =  2 * 1024 * 1024 * 1024,
-        outputDirectoryURL: URL? = nil
+        outputDirectoryURL: URL? = nil,
+        saveSnapshotPerIteration: Int = 100
     ) {
         self.model = model
         self.data = data
@@ -77,6 +78,7 @@ class GaussianTrainer {
         self.iterationCount = iterationCount
         self.cacheLimit = cacheLimit
         self.outputDirectoryURL = outputDirectoryURL
+        self.save_snapshot_per_iteration = saveSnapshotPerIteration
     }
     func fetchTrainData() -> (
         camera: Camera, rgb: MLXArray, mask: MLXArray, depth: MLXArray?

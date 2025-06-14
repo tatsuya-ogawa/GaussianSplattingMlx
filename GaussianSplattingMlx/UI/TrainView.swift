@@ -13,6 +13,9 @@ class TrainViewModel: ObservableObject {
 }
 struct TrainView: View {
     @StateObject var viewModel = TrainViewModel()
+    func getOutputDirectory()->URL{
+        return FileManager.default.temporaryDirectory.appendingPathComponent("outputs")
+    }
     func getDataLoader() throws -> DataLoaderProtocol {
         switch selected.format {
         case .colmap:
@@ -64,7 +67,8 @@ struct TrainView: View {
                 whiteBackground: whiteBackground
             ),
             iterationCount: 30000,
-            cacheLimit: cacheLimit
+            cacheLimit: cacheLimit,
+            outputDirectoryURL: getOutputDirectory()
         )
         viewModel.trainer?.startTrain()
         MLX.GPU.clearCache()
