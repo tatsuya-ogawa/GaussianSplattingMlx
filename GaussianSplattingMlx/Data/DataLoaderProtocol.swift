@@ -6,8 +6,8 @@
 //
 
 protocol DataLoaderProtocol {
-  func load(resizeFactor: Double, whiteBackground: Bool) throws -> (
-    TrainData, PointCloud, TILE_SIZE_H_W
-  )
+    func load(resizeFactor: Double, whiteBackground: Bool) throws -> (
+        TrainData, PointCloud, TILE_SIZE_H_W
+    )
 }
 let WORKING_DIRECTORY = "work"

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+
 struct SelectedDataSet: Equatable {
     var format: FileFormat
     var url: URL?
@@ -22,7 +23,7 @@ enum FileFormat: Equatable, Identifiable, Hashable {
         case .demo(let kind): return "demo_\(kind.rawValue)"
         }
     }
-    
+
     var label: String {
         switch self {
         case .colmap: return "Colmap"
@@ -46,7 +47,9 @@ struct ZipDocumentPicker: UIViewControllerRepresentable {
         return picker
     }
 
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    func updateUIViewController(
+        _ uiViewController: UIDocumentPickerViewController, context: Context
+    ) {}
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
         let parent: ZipDocumentPicker
@@ -55,7 +58,9 @@ struct ZipDocumentPicker: UIViewControllerRepresentable {
             self.parent = parent
         }
 
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]
+        ) {
             guard let url = urls.first else { return }
             parent.onPick(url)
         }
@@ -64,10 +69,11 @@ struct ZipDocumentPicker: UIViewControllerRepresentable {
 
 struct SelectDataSetView: View {
     @Binding var selected: SelectedDataSet
-    private let allFormats: [FileFormat] = [
-        .colmap,
-        .nerfstudio
-    ] + DemoKind.allCases.map { .demo($0) }
+    private let allFormats: [FileFormat] =
+        [
+            .colmap,
+            .nerfstudio,
+        ] + DemoKind.allCases.map { .demo($0) }
     @State private var showPicker = false
     @State private var pickedFile: URL?
     @State private var demoSelected: DemoKind = .chair

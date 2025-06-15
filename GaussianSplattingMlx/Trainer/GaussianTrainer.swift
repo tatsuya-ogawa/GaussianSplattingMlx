@@ -52,6 +52,12 @@ class TrainData {
         return (Hs, Ws, intrinsicArray, c2wArray)
     }
 }
+protocol GaussianTrainerDelegate: AnyObject {
+    func pushLoss(loss: Float, iteration: Int?, timestamp: Date)
+    func pushImageData(
+        render: MLXArray, truth: MLXArray, loss: Float, iteration: Int, timestamp: Date)
+    func pushSnapshot(url: URL,iteration: Int, timestamp: Date)
+}
 class GaussianTrainer {
     var data: TrainData
     var gaussRender: GaussianRenderer
@@ -63,12 +69,13 @@ class GaussianTrainer {
     var iterationCount: Int
     var outputDirectoryURL: URL?
     var cacheLimit: Int
+    weak var delegate: GaussianTrainerDelegate?
     init(
         model: GaussModel,
         data: TrainData,
         gaussRender: GaussianRenderer,
         iterationCount: Int,
-        cacheLimit: Int =  2 * 1024 * 1024 * 1024,
+        cacheLimit: Int = 2 * 1024 * 1024 * 1024,
         outputDirectoryURL: URL? = nil,
         saveSnapshotPerIteration: Int = 100
     ) {
@@ -98,22 +105,27 @@ class GaussianTrainer {
     }
     func save_snapshot(iteration: Int, params: [MLXArray]) {
         //TODO
-        if let outputDirectoryURL{
+        if let outputDirectoryURL {
             let xyz = params[0]
             let features_dc = params[1]
             let features_rest = params[2]
             let scales = params[3]
             let rotation = params[4]
             let opacity = params[5]
-            do{
-                try PlyWriter.writeGaussianBinary(positions: xyz, features_dc: features_dc, features_rest: features_rest, opacities: opacity, scales: scales, rotations: rotation, to: outputDirectoryURL.appendingPathComponent("iteration_\(iteration).ply"))
-            }catch{
+            do {
+                let outputURL = outputDirectoryURL.appendingPathComponent("iteration_\(iteration).ply")
+                try PlyWriter.writeGaussianBinary(
+                    positions: xyz, features_dc: features_dc, features_rest: features_rest,
+                    opacities: opacity, scales: scales, rotations: rotation,
+                    to: outputURL)
+                delegate?.pushSnapshot(url: outputURL, iteration: iteration, timestamp: Date())
+            } catch {
                 Logger.shared.error(error: error)
             }
         }
     }
     var forceStop: Bool = false
-    func stopTrain(){
+    func stopTrain() {
         forceStop = true
     }
     func startTrain(earlyStoppingThreshold: Float = 0.0001) {
@@ -147,11 +159,11 @@ class GaussianTrainer {
                 let _rotation = params[4]
                 let _opacity = params[5]
                 Logger.shared.debug("Prepare variables")
-                let means3d = GaussModel.get_xyz_from(_xyz)
-                let opacity = GaussModel.get_opacity_from(_opacity)
-                let scales = GaussModel.get_scales_from(_scales)
-                let rotations = GaussModel.get_rotation_from(_rotation)
-                let shs = GaussModel.get_features_from(
+                let means3d = gaussRender.get_xyz_from(_xyz)
+                let opacity = gaussRender.get_opacity_from(_opacity)
+                let scales = gaussRender.get_scales_from(_scales)
+                let rotations = gaussRender.get_rotation_from(_rotation)
+                let shs = gaussRender.get_features_from(
                     _features_dc,
                     _features_rest
                 )
@@ -159,9 +171,9 @@ class GaussianTrainer {
                 let (
                     render,
                     depth,
-                    alpha,
-                    visiility_filter,
-                    radii
+                    _,
+                    _,
+                    _
                 ) = gaussRender.forward(
                     camera: trainCamera,
                     means3d: means3d,
@@ -193,20 +205,18 @@ class GaussianTrainer {
             )(params)
             eval(loss[0], grads)
             let lossValue = loss[0].item(Float.self)
-
-            LossChartData.shared.push(
+            delegate?.pushLoss(
                 loss: lossValue,
                 iteration: iteration,
-                timestamp: Date()
-            )
+                timestamp: Date())
             if iteration % 20 == 0 {
                 let image = loss[1]
                 eval(image)
-                TrainStatusData.shared.pushImageData(
+                delegate?.pushImageData(
                     render: image,
                     truth: trainRGB,
                     loss: lossValue,
-                    iteration: iteration
+                    iteration: iteration, timestamp: Date()
                 )
             }
             if lossValue < earlyStoppingThreshold {

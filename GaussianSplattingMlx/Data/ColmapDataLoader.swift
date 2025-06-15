@@ -45,8 +45,7 @@ private struct ColmapCamera {
     }
 }
 
-private func readBinary<T: FixedWidthInteger>(_ handle: FileHandle) throws -> T
-{
+private func readBinary<T: FixedWidthInteger>(_ handle: FileHandle) throws -> T {
     let size = MemoryLayout<T>.size
     let data = try handle.read(upToCount: size) ?? Data()
     return data.withUnsafeBytes { $0.load(as: T.self) }
@@ -63,7 +62,7 @@ private func quatToRotMat(_ q: SIMD4<Double>) -> simd_double3x3 {
 }
 
 class ColmapDataLoader {
-    func unzipDataTo(zipUrl:URL,targetDirUrl:URL) throws {
+    func unzipDataTo(zipUrl: URL, targetDirUrl: URL) throws {
         if FileManager.default.fileExists(atPath: targetDirUrl.path) {
             try FileManager.default.removeItem(at: targetDirUrl)
         }
@@ -145,7 +144,7 @@ class ColmapDataLoader {
             MLXArray(Float(imageSize[1]))
         )
     }
-    private func colmapReadCamerasAndPoses(binRoot:URL,imageRoot:URL) throws -> (
+    private func colmapReadCamerasAndPoses(binRoot: URL, imageRoot: URL) throws -> (
         camMap: [UInt32: ColmapCamera],
         unorientedPoses: [ImageWithPose]
     ) {
@@ -415,10 +414,12 @@ class ColmapDataLoader {
 
         return (points: points, colors: colors)
     }
-    func loadTrainDataAndPointCloud(binRoot:URL,imageRoot:URL,resizeFactor: Double, whiteBackground: Bool) throws -> (
+    func loadTrainDataAndPointCloud(
+        binRoot: URL, imageRoot: URL, resizeFactor: Double, whiteBackground: Bool
+    ) throws -> (
         TrainData, PointCloud, TILE_SIZE_H_W
     ) {
-        let (camMap, poses) = try colmapReadCamerasAndPoses(binRoot: binRoot,imageRoot: imageRoot)
+        let (camMap, poses) = try colmapReadCamerasAndPoses(binRoot: binRoot, imageRoot: imageRoot)
         let intrinsics = MLX.stacked(
             poses.map { p in
                 guard let camera = camMap[p.cameraId] else {
@@ -480,7 +481,7 @@ class ColmapDataLoader {
         )
     }
 }
-class UserColmapDataLoader: ColmapDataLoader,DataLoaderProtocol {
+class UserColmapDataLoader: ColmapDataLoader, DataLoaderProtocol {
     let target_dir_name = "colmap_user"
     func getDataDir() -> URL {
         let tmpPath = NSTemporaryDirectory()
@@ -499,13 +500,15 @@ class UserColmapDataLoader: ColmapDataLoader,DataLoaderProtocol {
     let zipUrl: URL
     func load(resizeFactor: Double, whiteBackground: Bool) throws -> (
         TrainData, PointCloud, TILE_SIZE_H_W
-    ){
+    ) {
         let tempDir = getDataDir()
         try unzipDataTo(zipUrl: self.zipUrl, targetDirUrl: tempDir)
-        return try loadTrainDataAndPointCloud(binRoot: getBinRoot(), imageRoot: getImageRoot(), resizeFactor: resizeFactor, whiteBackground: whiteBackground)
+        return try loadTrainDataAndPointCloud(
+            binRoot: getBinRoot(), imageRoot: getImageRoot(), resizeFactor: resizeFactor,
+            whiteBackground: whiteBackground)
     }
 }
-class DemoColmapDataLoader: ColmapDataLoader,DataLoaderProtocol {
+class DemoColmapDataLoader: ColmapDataLoader, DataLoaderProtocol {
     let target_dir_name = "colmap_demo"
     func getDataDir() -> URL {
         let tmpPath = NSTemporaryDirectory()
@@ -518,10 +521,10 @@ class DemoColmapDataLoader: ColmapDataLoader,DataLoaderProtocol {
     func getImageRoot() -> URL {
         return getDataDir().appendingPathComponent("images")
     }
-    func getDownloadRoot()->URL{
+    func getDownloadRoot() -> URL {
         return URL(fileURLWithPath: NSTemporaryDirectory())
     }
-    func downloadDemoData() throws->URL?{
+    func downloadDemoData() throws -> URL? {
         let infoJsonURL = getDataDir().appendingPathComponent("sparse/0/cameras.bin")
         if FileManager.default.fileExists(atPath: infoJsonURL.path) {
             Logger.shared.debug("already downloaded")
@@ -544,12 +547,14 @@ class DemoColmapDataLoader: ColmapDataLoader,DataLoaderProtocol {
     }
     func load(resizeFactor: Double, whiteBackground: Bool) throws -> (
         TrainData, PointCloud, TILE_SIZE_H_W
-    ){
+    ) {
         let tempDir = getDataDir()
-        if let localZipURL = try downloadDemoData(){
+        if let localZipURL = try downloadDemoData() {
             try unzipDataTo(zipUrl: localZipURL, targetDirUrl: tempDir)
         }
-     
-        return try loadTrainDataAndPointCloud(binRoot: getBinRoot(), imageRoot: getImageRoot(), resizeFactor: resizeFactor, whiteBackground: whiteBackground)
+
+        return try loadTrainDataAndPointCloud(
+            binRoot: getBinRoot(), imageRoot: getImageRoot(), resizeFactor: resizeFactor,
+            whiteBackground: whiteBackground)
     }
 }

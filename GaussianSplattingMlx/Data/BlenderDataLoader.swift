@@ -279,16 +279,16 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
         )
     }
     private func getTargetDir() -> URL {
-      let tmpPath = NSTemporaryDirectory()
-      return URL(fileURLWithPath: tmpPath)
-        .appendingPathComponent(WORKING_DIRECTORY)
-        .appendingPathComponent("demo_data")
+        let tmpPath = NSTemporaryDirectory()
+        return URL(fileURLWithPath: tmpPath)
+            .appendingPathComponent(WORKING_DIRECTORY)
+            .appendingPathComponent("demo_data")
     }
     private func getDataDir() -> URL {
         return getTargetDir().appendingPathComponent("B075X65R3X")
     }
 
-    func downloadDemoData()throws{
+    func downloadDemoData() throws {
         let tempDir = getTargetDir()
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let infoJsonURL = getDataDir().appendingPathComponent("info.json")
@@ -296,7 +296,11 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
             Logger.shared.debug("already downloaded")
             return
         }
-        let zipData = try Data(contentsOf: URL(string: "https://raw.githubusercontent.com/hbb1/torch-splatting/refs/heads/main/B075X65R3X.zip")!)
+        let zipData = try Data(
+            contentsOf: URL(
+                string:
+                    "https://raw.githubusercontent.com/hbb1/torch-splatting/refs/heads/main/B075X65R3X.zip"
+            )!)
         let localZipURL = tempDir.appendingPathComponent("B075X65R3X.zip")
         try zipData.write(to: localZipURL)
         try FileManager.default.unzipItem(at: localZipURL, to: tempDir)
