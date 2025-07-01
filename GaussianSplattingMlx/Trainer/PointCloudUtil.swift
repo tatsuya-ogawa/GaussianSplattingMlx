@@ -131,8 +131,8 @@ func getPointCloudsFromTrainData(
     return PointCloud(coords: coords, channels: chDict)
 }
 class PointCloud {
-    let coords: MLXArray
-    let channels: [String: MLXArray]
+    var coords: MLXArray
+    var channels: [String: MLXArray]
     init(coords: MLXArray, channels: [String: MLXArray]) {
         self.coords = coords
         self.channels = channels
@@ -167,5 +167,26 @@ class PointCloud {
             newChannels[k] = arr[pickArr]
         }
         return PointCloud(coords: newCoords, channels: newChannels)
+    }
+    func centering(data: TrainData,outlierSigma:Float=3.0) {
+        var c2wArray = data.c2wArray
+        let centerOfCoords = coords.mean(axis: 0)
+        c2wArray[0..., 0..<3, 3] -= centerOfCoords
+        data.c2wArray = c2wArray
+        self.coords -= centerOfCoords
+        //remove outlier
+        let stddev = MLX.std(self.coords, axis: 0)
+        let indices = conditionToIndices(
+            condition: (self.coords[.ellipsis, 0] .> -outlierSigma * stddev[0])
+                & (self.coords[.ellipsis, 0] .< outlierSigma * stddev[0])
+                & (self.coords[.ellipsis, 1] .> -outlierSigma * stddev[1])
+                & (self.coords[.ellipsis, 1] .< outlierSigma * stddev[1])
+                & (self.coords[.ellipsis, 2] .> -outlierSigma * stddev[2])
+                & (self.coords[.ellipsis, 2] .< outlierSigma * stddev[2])
+        )
+        self.coords = self.coords[indices]
+        for (k, arr) in channels {
+            self.channels[k] = arr[indices]
+        }
     }
 }
