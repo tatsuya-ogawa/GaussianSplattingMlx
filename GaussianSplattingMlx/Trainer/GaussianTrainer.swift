@@ -13,7 +13,7 @@ class TrainData {
     let Hs: MLXArray
     let Ws: MLXArray
     let intrinsicArray: MLXArray
-    let c2wArray: MLXArray
+    var c2wArray: MLXArray
     let rgbArray: MLXArray
     let alphaArray: MLXArray
     let depthArray: MLXArray?

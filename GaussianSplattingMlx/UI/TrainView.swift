@@ -106,6 +106,7 @@ struct TrainView: View {
             resizeFactor: 0.5,
             whiteBackground: whiteBackground
         )
+        pointCloud.centering(data: data)
 
         let cacheLimit = 2 * 1024 * 1024 * 1024
         MLX.GPU.set(cacheLimit: cacheLimit)
