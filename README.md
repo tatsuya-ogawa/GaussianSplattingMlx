@@ -35,6 +35,9 @@ This implementation is based on:
   * Mac (runs as iPad-compatible app)
 * MLX framework
 
+## ScreenShots
+![Lego Training](./docs/lego.png)
+
 ## Citation
 
 If you find this implementation useful, please cite the original Gaussian Splatting paper:
