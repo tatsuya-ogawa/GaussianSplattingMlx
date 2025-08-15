@@ -137,7 +137,7 @@ class PlyWriter {
         try writeGaussianBinary(
             positions: pos.chunked(into: 3),
             features_dc: dc.chunked(into: 3),
-            features_rest: rest.chunked(into: M * D).map { $0.chunked(into: 3) },
+            features_rest: rest.chunked(into: M * D).map { $0.chunked(into: D) },
             opacities: opa,
             scales: scl.chunked(into: 3),
             rotations: rot.chunked(into: 4),
