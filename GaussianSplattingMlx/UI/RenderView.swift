@@ -62,9 +62,14 @@ private func lookAt(eye: simd_double3, center: simd_double3, up: simd_double3)
 class RenderViewModel: ObservableObject {
     let width: Int
     let height: Int
+    
+    @Published var useMetalRenderer: Bool = false
+    private let metalRenderer: MetalGaussianRenderer?
+    
     init(width: Int, height: Int) {
         self.width = width
         self.height = height
+        self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
     }
 
     @Published var image: UIImage?
@@ -146,6 +151,21 @@ class RenderViewModel: ObservableObject {
         else {
             return
         }
+        
+        if useMetalRenderer && metalRenderer != nil {
+            renderWithMetal()
+        } else {
+            renderWithMLX()
+        }
+    }
+    
+    private func renderWithMLX() {
+        guard let xyzArray, let opacityArray, let scalesArray,
+            let rotationArray, let features_dcArray, let features_restArray
+        else {
+            return
+        }
+        
         let gaussRender = GaussianRenderer(
             active_sh_degree: 4,
             W: width,
@@ -189,6 +209,55 @@ class RenderViewModel: ObservableObject {
         }
         MLX.GPU.clearCache()
     }
+    
+    private func renderWithMetal() {
+        guard let metalRenderer = metalRenderer,
+              let xyzArray, let opacityArray, let scalesArray,
+              let rotationArray, let features_dcArray, let features_restArray
+        else {
+            return
+        }
+        
+        let gaussRender = GaussianRenderer(
+            active_sh_degree: 4,
+            W: width,
+            H: height,
+            TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
+            whiteBackground: false
+        )
+        
+        let means3d = gaussRender.get_xyz_from(xyzArray)
+        let opacity = gaussRender.get_opacity_from(opacityArray)
+        let scales = gaussRender.get_scales_from(scalesArray)
+        let rotations = gaussRender.get_rotation_from(rotationArray)
+        let shs = gaussRender.get_features_from(
+            features_dcArray,
+            features_restArray
+        )
+        
+        let camera = Camera(
+            width: width,
+            height: height,
+            focalX: Float(focalX),
+            focalY: Float(focalY),
+            c2w: cameraMatrix
+        )
+        
+        if let texture = metalRenderer.render(
+            camera: camera,
+            means3d: means3d,
+            shs: shs,
+            opacity: opacity,
+            scales: scales,
+            rotations: rotations,
+            width: width,
+            height: height
+        ) {
+            DispatchQueue.main.async {
+                self.image = metalRenderer.textureToUIImage(texture)
+            }
+        }
+    }
 }
 struct RenderView: View {
     let width: Int
@@ -212,6 +281,18 @@ struct RenderView: View {
     }
     var body: some View {
         VStack {
+            HStack {
+                Text("Renderer:")
+                Picker("Renderer", selection: $viewModel.useMetalRenderer) {
+                    Text("MLX").tag(false)
+                    Text("Metal").tag(true)
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .frame(width: 150)
+                Spacer()
+            }
+            .padding(.horizontal)
+            
             if let img = viewModel.image {
                 Image(uiImage: img)
                     .resizable()
@@ -281,6 +362,13 @@ struct RenderView: View {
             } else {
                 DispatchQueue.main.async {
                     viewModel.image = nil
+                }
+            }
+        }
+        .onChange(of: viewModel.useMetalRenderer) { _ in
+            if url != nil && viewModel.xyzArray != nil {
+                renderQueue.async {
+                    viewModel.render()
                 }
             }
         }
