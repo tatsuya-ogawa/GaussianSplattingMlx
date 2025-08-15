@@ -218,15 +218,27 @@ func matrixInverse2d(_ m: MLXArray) -> MLXArray {
     return inv
 }
 func conditionToIndices(condition: MLXArray) -> MLXArray {
+    // Fast path: use top-k with k = number of true values (O(N log k)) instead of full sort (O(N log N)).
+    // condition: 1-D bool array
     Logger.shared.debug("conditionToIndices start")
-    let arange = MLX.where(condition, MLXArray(0..<condition.shape[0]), MLXArray(Int32.max))
-    let sorted = MLX.sorted(arange)
-    if sorted.shape[0] == 0 {
-        return MLXArray([])
-    }
-    let index = MLX.argMax(sorted)
+    precondition(condition.shape.count == 1, "conditionToIndices expects 1D array")
+    let n = condition.shape[0]
+    if n == 0 { return MLXArray([]) }
+    let maskInt = condition.asType(.int32)
+    var countArr = MLX.sum(maskInt)
+    eval(countArr)
+    let count = countArr.item(Int.self)
+    if count == 0 { return MLXArray([]) }
+    let idx = MLXArray(0..<Int32(n))
+    if count == n { return MLX.stopGradient(idx) }
+    // Replace false positions with Int32.min so they never appear in top-k selection.
+    let weights = MLX.where(condition, idx, MLXArray(Int32.min))
+    // Select exactly 'count' valid indices (returned in descending order).
+    let topkDesc = MLX.top(weights, k: count, axis: 0)
+    // Sort ascending to preserve natural order.
+    let sortedAsc = MLX.sorted(topkDesc)
     Logger.shared.debug("conditionToIndices end")
-    return MLX.stopGradient(sorted[0..<index.item(Int.self)])
+    return MLX.stopGradient(sortedAsc)
 }
 func detachedArray(_ array: MLXArray) -> MLXArray {
     let data = MLX.stopGradient(array).asData(access: .copy)

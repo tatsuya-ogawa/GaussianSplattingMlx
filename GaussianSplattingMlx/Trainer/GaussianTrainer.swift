@@ -103,8 +103,8 @@ class GaussianTrainer {
         
         // Initialize gradient accumulation arrays
         let numPoints = model._xyz.shape[0]
-        self.xyzGradAccumulation = MLXArray.zeros([numPoints])
-        self.denomGradAccumulation = MLXArray.zeros([numPoints])
+    self.xyzGradAccumulation = MLXArray.zeros([numPoints, 3])
+    self.denomGradAccumulation = MLXArray.zeros([numPoints])
     }
     func fetchTrainData() -> (
         camera: Camera, rgb: MLXArray, mask: MLXArray, depth: MLXArray?
@@ -120,21 +120,19 @@ class GaussianTrainer {
         return (camera, rgb, mask, depth)
     }
     func addGradientAccumulation(xyzGrad: MLXArray) {
-        let gradNorm = MLX.sum(MLX.square(xyzGrad), axes: [1])
+        // xyzGrad shape expected [N,3]
         let numPoints = xyzGrad.shape[0]
-        
         if xyzGradAccumulation.shape[0] != numPoints {
-            xyzGradAccumulation = MLXArray.zeros([numPoints])
+            xyzGradAccumulation = MLXArray.zeros([numPoints, 3])
             denomGradAccumulation = MLXArray.zeros([numPoints])
         }
-        
-        xyzGradAccumulation = xyzGradAccumulation + gradNorm
+        xyzGradAccumulation = xyzGradAccumulation + xyzGrad
         denomGradAccumulation = denomGradAccumulation + MLXArray.ones([numPoints])
     }
     
     func resetGradientAccumulation() {
         let numPoints = model._xyz.shape[0]
-        xyzGradAccumulation = MLXArray.zeros([numPoints])
+        xyzGradAccumulation = MLXArray.zeros([numPoints, 3])
         denomGradAccumulation = MLXArray.zeros([numPoints])
     }
     
@@ -153,8 +151,8 @@ class GaussianTrainer {
         let numPoints = _xyz.shape[0]
         
         // Calculate average gradient magnitude
-        let avgGrads = xyzGradAccumulation / denomGradAccumulation.expandedDimensions(axes: [1])
-        let gradMagnitude = MLX.sqrt(avgGrads)
+    let avgGrads = xyzGradAccumulation / denomGradAccumulation.expandedDimensions(axes: [1])
+    let gradMagnitude = MLX.sqrt(MLX.sum(MLX.square(avgGrads), axes: [1])) // shape [N]
         
         // Get current scales and opacity
         let scales = MLX.exp(_scales)
@@ -165,7 +163,7 @@ class GaussianTrainer {
         
         // Find points to split (large scale)
         let maxScalePerGaussian = MLX.max(scales, axes: [1])
-        let splitMask = gradMask & (maxScalePerGaussian .> MLXArray(maxScale))
+    let splitMask = gradMask & (maxScalePerGaussian .> MLXArray(maxScale))
         
         // Find points to clone (small scale) 
         let cloneMask = gradMask & (maxScalePerGaussian .<= MLXArray(maxScale))
@@ -176,7 +174,7 @@ class GaussianTrainer {
         // Perform splitting
         if MLX.sum(splitMask.asType(.int32)).item(Int.self) > 0 {
             let splitIndices = conditionToIndices(condition: splitMask)
-            (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) = 
+            (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) =
                 splitGaussians(
                     xyz: _xyz, features_dc: _features_dc, features_rest: _features_rest,
                     scales: _scales, rotation: _rotation, opacity: _opacity,
@@ -232,8 +230,8 @@ class GaussianTrainer {
         let selectedRotation = rotation[indices]
         let selectedOpacity = opacity[indices]
         
-        // Scale down the selected Gaussians
-        let newScales = selectedScales - MLX.log(MLXArray(1.6))
+    // Scale down the selected Gaussians (log-scale adjustment)
+    let newScales = selectedScales - MLX.log(MLXArray(1.6))
         
         // Create two new Gaussians for each split
         let numSplit = indices.shape[0]
@@ -242,19 +240,15 @@ class GaussianTrainer {
         let newXYZ1 = selectedXYZ + noise
         let newXYZ2 = selectedXYZ - noise
         
-        // Create mask to keep Gaussians that are NOT being split
-        let totalPoints = xyz.shape[0]
-        var keepMask = MLXArray.ones([totalPoints], dtype: .bool)
-        
-        // Set split indices to false in keep mask
-        for i in 0..<indices.shape[0] {
-            let idx = indices[i].item(Int.self)
-            if idx < totalPoints {
-                keepMask[idx] = MLXArray(false)
-            }
-        }
-        
-        let keepIndices = conditionToIndices(condition: keepMask)
+    // Build keep mask vectorized
+    let totalPoints = xyz.shape[0]
+    // Create an array of all indices and compare against split indices set
+    let allIdx = MLXArray(0..<Int32(totalPoints))
+    // For membership test, expand dims and compare, then reduce
+    let idxCompare = allIdx.expandedDimensions(axes: [1]) .== indices.expandedDimensions(axes: [0]) // [N, M]
+    let isSplit = MLX.any(idxCompare, axes: [1]) // [N]
+    let keepMask = .!isSplit
+    let keepIndices = conditionToIndices(condition: keepMask)
         
         // Keep non-split Gaussians and add the two new ones for each split
         let keptXYZ = xyz[keepIndices]

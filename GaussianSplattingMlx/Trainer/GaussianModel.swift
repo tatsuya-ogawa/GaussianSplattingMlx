@@ -9,22 +9,25 @@ import Foundation
 import MLX
 
 func distTopK(_ X: MLXArray, k: Int) -> MLXArray {
-    // X1: [N, 1, 3], X2: [1, N, 3]
+    // Compute average distance to k nearest neighbors (squared distance root applied later outside caller if needed)
+    let N = X.shape[0]
+    if N == 0 { return MLXArray.zeros([0]) }
     let chunkSize: Int = 1 << 8
-    let averageDist2 = MLXArray.zeros(like: X[.ellipsis, 0])
-    let iterationSize: Int = X.shape[0] / chunkSize + 1
-    let X1 = X.expandedDimensions(axes: [1])  // [N,1,3]
+    var averageDist2 = MLXArray.zeros(like: X[.ellipsis, 0]) // shape [N]
+    // Pre-expand once to avoid inside-loop broadcasting overhead
     let X2 = X.expandedDimensions(axes: [0])  // [1,N,3]
-    for i in stride(from: 0, to: iterationSize, by: chunkSize) {
-        let batchX1 = X1[i..<i + chunkSize]
-        let diff = batchX1 - X2  // [N,N,3]
-        let sq = MLX.square(diff)  // [N,N,3]
-        let dist2 = -1 * MLX.sum(sq, axes: [-1])  // [N,N]
-        let topK = -1 * MLX.top(dist2, k: k, axis: -1)
-        var mean = MLX.mean(topK, axes: [-1])
+    for i in stride(from: 0, to: N, by: chunkSize) {
+        let end = Swift.min(i + chunkSize, N)
+        let batch = X[i..<end].expandedDimensions(axes: [1]) // [B,1,3]
+        // diff: [B,N,3]
+        let diff = batch - X2
+        let dist2 = MLX.sum(MLX.square(diff), axes: [-1]) // [B,N]
+        // Use negative to leverage top (largest) -> smallest distances selection
+        let negTop = MLX.top(-dist2, k: k, axis: -1) // [B,k] (negative values)
+        var mean = -MLX.mean(negTop, axes: [-1]) // back to positive
         mean = MLX.stopGradient(mean)
         eval(mean)
-        averageDist2[i..<i + chunkSize] = mean
+        averageDist2[i..<end] = mean
         MLX.GPU.clearCache()
     }
     return averageDist2

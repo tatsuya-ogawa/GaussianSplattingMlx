@@ -254,17 +254,20 @@ class GaussianRenderer {
                 )
                 Logger.shared.debug("after renderTile")
                 Logger.shared.debug("before assign")
+                // Respect actual tile size at boundaries
+                let hEnd = Swift.min(h + TILE_SIZE.h, camera.imageHeight)
+                let wEnd = Swift.min(w + TILE_SIZE.w, camera.imageWidth)
                 render_color[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
+                    .stride(from: h, to: hEnd),
+                    .stride(from: w, to: wEnd)
                 ] = tile_color
                 render_depth[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
+                    .stride(from: h, to: hEnd),
+                    .stride(from: w, to: wEnd)
                 ] = tile_depth
                 render_alpha[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
+                    .stride(from: h, to: hEnd),
+                    .stride(from: w, to: wEnd)
                 ] = acc_alpha
                 Logger.shared.debug("after assign")
             }
