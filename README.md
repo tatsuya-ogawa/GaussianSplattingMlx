@@ -19,11 +19,11 @@ This implementation is based on:
 * PLY export for intermediate results visualization
 * Support for COLMAP formatted datasets
 * Support for NerfStudio formatted datasets
+* Gaussian pruning and splitting operations
+* Checkpoint visualization
 
 ## Upcoming Features
 
-* Gaussian pruning and splitting operations
-* Checkpoint visualization
 * Memory optimization
 * Use ARKit depth as dataset
 
