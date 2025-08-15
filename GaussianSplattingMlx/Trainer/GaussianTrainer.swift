@@ -8,6 +8,7 @@
 import Foundation
 import MLX
 import MLXOptimizers
+import MLXRandom
 
 class TrainData {
     let Hs: MLXArray
@@ -70,6 +71,19 @@ class GaussianTrainer {
     var outputDirectoryURL: URL?
     var cacheLimit: Int
     weak var delegate: GaussianTrainerDelegate?
+    
+    // Split and prune parameters
+    var gradientThreshold: Float = 0.0002
+    var maxScreenSize: Float = 20.0
+    var minOpacity: Float = 0.005
+    var maxScale: Float = 0.01
+    var pruneInterval: Int = 100
+    var densifyFromIter: Int = 500
+    var densifyUntilIter: Int = 15000
+    
+    // Tracking gradients for densification
+    var xyzGradAccumulation: MLXArray = MLXArray.zeros([0, 3])
+    var denomGradAccumulation: MLXArray = MLXArray.zeros([0])
     init(
         model: GaussModel,
         data: TrainData,
@@ -86,6 +100,11 @@ class GaussianTrainer {
         self.cacheLimit = cacheLimit
         self.outputDirectoryURL = outputDirectoryURL
         self.save_snapshot_per_iteration = saveSnapshotPerIteration
+        
+        // Initialize gradient accumulation arrays
+        let numPoints = model._xyz.shape[0]
+        self.xyzGradAccumulation = MLXArray.zeros([numPoints])
+        self.denomGradAccumulation = MLXArray.zeros([numPoints])
     }
     func fetchTrainData() -> (
         camera: Camera, rgb: MLXArray, mask: MLXArray, depth: MLXArray?
@@ -100,8 +119,203 @@ class GaussianTrainer {
         let camera = data.getViewPointCamera(index: ind)
         return (camera, rgb, mask, depth)
     }
-    func split_and_prune(params: [MLXArray], states: [TupleState]) {
-        //TODO
+    func addGradientAccumulation(xyzGrad: MLXArray) {
+        let gradNorm = MLX.sum(MLX.square(xyzGrad), axes: [1])
+        let numPoints = xyzGrad.shape[0]
+        
+        if xyzGradAccumulation.shape[0] != numPoints {
+            xyzGradAccumulation = MLXArray.zeros([numPoints])
+            denomGradAccumulation = MLXArray.zeros([numPoints])
+        }
+        
+        xyzGradAccumulation = xyzGradAccumulation + gradNorm
+        denomGradAccumulation = denomGradAccumulation + MLXArray.ones([numPoints])
+    }
+    
+    func resetGradientAccumulation() {
+        let numPoints = model._xyz.shape[0]
+        xyzGradAccumulation = MLXArray.zeros([numPoints])
+        denomGradAccumulation = MLXArray.zeros([numPoints])
+    }
+    
+    func split_and_prune(params: [MLXArray], states: [TupleState], iteration: Int) {
+        guard iteration >= densifyFromIter && iteration <= densifyUntilIter else {
+            return
+        }
+        
+        var _xyz = params[0]
+        var _features_dc = params[1]
+        var _features_rest = params[2]
+        var _scales = params[3]
+        var _rotation = params[4]
+        var _opacity = params[5]
+        
+        let numPoints = _xyz.shape[0]
+        
+        // Calculate average gradient magnitude
+        let avgGrads = xyzGradAccumulation / denomGradAccumulation.expandedDimensions(axes: [1])
+        let gradMagnitude = MLX.sqrt(avgGrads)
+        
+        // Get current scales and opacity
+        let scales = MLX.exp(_scales)
+        let opacity = MLX.sigmoid(_opacity)
+        
+        // Find points to densify (high gradient)
+        let gradMask = gradMagnitude .> gradientThreshold
+        
+        // Find points to split (large scale)
+        let maxScalePerGaussian = MLX.max(scales, axes: [1])
+        let splitMask = gradMask & (maxScalePerGaussian .> MLXArray(maxScale))
+        
+        // Find points to clone (small scale) 
+        let cloneMask = gradMask & (maxScalePerGaussian .<= MLXArray(maxScale))
+        
+        // Find points to prune (low opacity)
+        let pruneMask = (opacity .< minOpacity).reshaped([-1])
+        
+        // Perform splitting
+        if MLX.sum(splitMask.asType(.int32)).item(Int.self) > 0 {
+            let splitIndices = conditionToIndices(condition: splitMask)
+            (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) = 
+                splitGaussians(
+                    xyz: _xyz, features_dc: _features_dc, features_rest: _features_rest,
+                    scales: _scales, rotation: _rotation, opacity: _opacity,
+                    indices: splitIndices
+                )
+        }
+        
+        // Perform cloning
+        if MLX.sum(cloneMask.asType(.int32)).item(Int.self) > 0 {
+            let cloneIndices = conditionToIndices(condition: cloneMask)
+            (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) = 
+                cloneGaussians(
+                    xyz: _xyz, features_dc: _features_dc, features_rest: _features_rest,
+                    scales: _scales, rotation: _rotation, opacity: _opacity,
+                    indices: cloneIndices
+                )
+        }
+        
+        // Perform pruning
+        if MLX.sum(pruneMask.asType(.int32)).item(Int.self) > 0 {
+            let keepMask: MLXArray = .!pruneMask
+            let keepIndices = conditionToIndices(condition: keepMask)
+            (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) = 
+                pruneGaussians(
+                    xyz: _xyz, features_dc: _features_dc, features_rest: _features_rest,
+                    scales: _scales, rotation: _rotation, opacity: _opacity,
+                    indices: keepIndices
+                )
+        }
+        
+        // Update model parameters
+        model._xyz = _xyz
+        model._features_dc = _features_dc
+        model._features_rest = _features_rest
+        model._scales = _scales
+        model._rotation = _rotation
+        model._opacity = _opacity
+        
+        // Reset gradient accumulation
+        resetGradientAccumulation()
+    }
+    
+    func splitGaussians(
+        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
+        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
+        indices: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
+        
+        let selectedXYZ = xyz[indices]
+        let selectedFeaturesDC = features_dc[indices]
+        let selectedFeaturesRest = features_rest[indices]
+        let selectedScales = scales[indices]
+        let selectedRotation = rotation[indices]
+        let selectedOpacity = opacity[indices]
+        
+        // Scale down the selected Gaussians
+        let newScales = selectedScales - MLX.log(MLXArray(1.6))
+        
+        // Create two new Gaussians for each split
+        let numSplit = indices.shape[0]
+        let noise = MLXRandom.normal([numSplit, 3]) * 0.1
+        
+        let newXYZ1 = selectedXYZ + noise
+        let newXYZ2 = selectedXYZ - noise
+        
+        // Create mask to keep Gaussians that are NOT being split
+        let totalPoints = xyz.shape[0]
+        var keepMask = MLXArray.ones([totalPoints], dtype: .bool)
+        
+        // Set split indices to false in keep mask
+        for i in 0..<indices.shape[0] {
+            let idx = indices[i].item(Int.self)
+            if idx < totalPoints {
+                keepMask[idx] = MLXArray(false)
+            }
+        }
+        
+        let keepIndices = conditionToIndices(condition: keepMask)
+        
+        // Keep non-split Gaussians and add the two new ones for each split
+        let keptXYZ = xyz[keepIndices]
+        let keptFeaturesDC = features_dc[keepIndices]
+        let keptFeaturesRest = features_rest[keepIndices]
+        let keptScales = scales[keepIndices]
+        let keptRotation = rotation[keepIndices]
+        let keptOpacity = opacity[keepIndices]
+        
+        let newXYZAll = MLX.concatenated([keptXYZ, newXYZ1, newXYZ2], axis: 0)
+        let newFeaturesDCAll = MLX.concatenated([keptFeaturesDC, selectedFeaturesDC, selectedFeaturesDC], axis: 0)
+        let newFeaturesRestAll = MLX.concatenated([keptFeaturesRest, selectedFeaturesRest, selectedFeaturesRest], axis: 0)
+        let newScalesAll = MLX.concatenated([keptScales, newScales, newScales], axis: 0)
+        let newRotationAll = MLX.concatenated([keptRotation, selectedRotation, selectedRotation], axis: 0)
+        let newOpacityAll = MLX.concatenated([keptOpacity, selectedOpacity, selectedOpacity], axis: 0)
+        
+        return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
+    }
+    
+    func cloneGaussians(
+        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
+        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
+        indices: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
+        
+        let selectedXYZ = xyz[indices]
+        let selectedFeaturesDC = features_dc[indices]
+        let selectedFeaturesRest = features_rest[indices]
+        let selectedScales = scales[indices]
+        let selectedRotation = rotation[indices]
+        let selectedOpacity = opacity[indices]
+        
+        // Add small noise to position
+        let noise = MLXRandom.normal(selectedXYZ.shape) * 0.01
+        let newXYZ = selectedXYZ + noise
+        
+        // Concatenate cloned Gaussians
+        let newXYZAll = MLX.concatenated([xyz, newXYZ], axis: 0)
+        let newFeaturesDCAll = MLX.concatenated([features_dc, selectedFeaturesDC], axis: 0)
+        let newFeaturesRestAll = MLX.concatenated([features_rest, selectedFeaturesRest], axis: 0)
+        let newScalesAll = MLX.concatenated([scales, selectedScales], axis: 0)
+        let newRotationAll = MLX.concatenated([rotation, selectedRotation], axis: 0)
+        let newOpacityAll = MLX.concatenated([opacity, selectedOpacity], axis: 0)
+        
+        return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
+    }
+    
+    func pruneGaussians(
+        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
+        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
+        indices: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
+        
+        let newXYZ = xyz[indices]
+        let newFeaturesDC = features_dc[indices]
+        let newFeaturesRest = features_rest[indices]
+        let newScales = scales[indices]
+        let newRotation = rotation[indices]
+        let newOpacity = opacity[indices]
+        
+        return (newXYZ, newFeaturesDC, newFeaturesRest, newScales, newRotation, newOpacity)
     }
     func save_snapshot(iteration: Int, params: [MLXArray]) {
         //TODO
@@ -205,6 +419,10 @@ class GaussianTrainer {
             )(params)
             eval(loss[0], grads)
             let lossValue = loss[0].item(Float.self)
+            
+            // Accumulate gradients for densification
+            addGradientAccumulation(xyzGrad: grads[0])
+            
             delegate?.pushLoss(
                 loss: lossValue,
                 iteration: iteration,
@@ -249,7 +467,13 @@ class GaussianTrainer {
                 MLX.GPU.clearCache()
             }
             if iteration % self.split_and_prune_per_iteration == 0 {
-                self.split_and_prune(params: params, states: states)
+                self.split_and_prune(params: params, states: states, iteration: iteration)
+                // Update params after split_and_prune
+                params = model.getParams()
+                // Reinitialize optimizer states for new parameters
+                states = params.map {
+                    optimizer.newState(parameter: $0)
+                }
                 MLX.GPU.clearCache()
             }
         }
