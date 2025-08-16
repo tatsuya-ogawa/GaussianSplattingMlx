@@ -10,7 +10,7 @@ import MLX
 import UIKit
 import simd
 
-private struct SceneData: Codable {
+public struct SceneData: Codable {
     let backend: String
     let lightMode: String
     let fastMode: Bool
@@ -32,7 +32,7 @@ private struct SceneData: Codable {
     }
 }
 
-private struct ImageData: Codable {
+public struct ImageData: Codable {
     let intrinsic: [[Double]]
     let pose: [[Double]]
     let rgb: String

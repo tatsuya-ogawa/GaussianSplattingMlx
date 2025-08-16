@@ -66,12 +66,14 @@ class RenderViewModel: ObservableObject {
     @Published var useMetalRenderer: Bool = false
     @Published var renderingMethod: SplattingMethod = .gaussian
     private let metalRenderer: MetalGaussianRenderer?
+    private let metalTriangleRenderer: MetalTriangleRenderer?
     private var triangleRenderer: TriangleRenderer?
     
     init(width: Int, height: Int) {
         self.width = width
         self.height = height
         self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
+        self.metalTriangleRenderer = MetalTriangleRenderer(maxTriangles: 500000, tileSize: SIMD2<UInt32>(64, 64))
         self.triangleRenderer = TriangleRenderer(
             active_sh_degree: 4,
             W: width,
@@ -137,38 +139,75 @@ class RenderViewModel: ObservableObject {
     var opacityArray: MLXArray?
     var scalesArray: MLXArray?
     var rotationArray: MLXArray?
+    
+    // Triangle model data
+    var triangleModel: TriangleModel?
     func calcBoundingBox(xyzArray: MLXArray) -> ([Float], [Float]) {
         let max = xyzArray.max(axes: [0])
         let min = xyzArray.min(axes: [0])
         return (min.asArray(Float.self), max.asArray(Float.self))
     }
     func load(url: URL) throws {
-        let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) =
-            try PlyWriter.loadGaussianBinaryPLYAsMLX(from: url)
-        self.xyzArray = _xyz
-        self.features_dcArray = _features_dc
-        self.features_restArray = _features_rest
-        self.opacityArray = _opacity
-        self.scalesArray = _scales
-        self.rotationArray = _rotation
-
-        setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
+        let fileExtension = url.pathExtension.lowercased()
+        
+        switch renderingMethod {
+        case .gaussian:
+            let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) =
+                try PlyWriter.loadGaussianBinaryPLYAsMLX(from: url)
+            self.xyzArray = _xyz
+            self.features_dcArray = _features_dc
+            self.features_restArray = _features_rest
+            self.opacityArray = _opacity
+            self.scalesArray = _scales
+            self.rotationArray = _rotation
+            
+            setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
+            
+        case .triangle:
+            if fileExtension == "json" {
+                // Load triangle model from JSON
+                triangleModel = TriangleModel(numTriangles: 1000, shDegree: 3)
+                try triangleModel!.load(path: url.path)
+                
+                let centers = triangleModel!.getTriangleCenters()
+                setInitialCamera(boundingBox: calcBoundingBox(xyzArray: centers), width: width, height: height)
+            } else {
+                // Convert Gaussian PLY to triangle model
+                let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) =
+                    try PlyWriter.loadGaussianBinaryPLYAsMLX(from: url)
+                
+                triangleModel = TriangleModel(fromPointCloud: _xyz, colors: _features_dc, shDegree: 3)
+                setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
+            }
+        }
     }
     func render() {
-        guard let xyzArray, let opacityArray, let scalesArray,
-            let rotationArray, let features_dcArray, let features_restArray
-        else {
-            return
-        }
-        
-        if useMetalRenderer && metalRenderer != nil {
-            renderWithMetal()
-        } else {
-            renderWithMLX()
+        switch renderingMethod {
+        case .gaussian:
+            guard let xyzArray, let opacityArray, let scalesArray,
+                let rotationArray, let features_dcArray, let features_restArray
+            else {
+                return
+            }
+            
+            if useMetalRenderer && metalRenderer != nil {
+                renderGaussianWithMetal()
+            } else {
+                renderGaussianWithMLX()
+            }
+            
+        case .triangle:
+            guard let triangleModel = triangleModel else { return }
+            
+            if useMetalRenderer && metalTriangleRenderer != nil {
+                renderTriangleWithMetal(triangleModel: triangleModel)
+            } else {
+                renderTriangleWithMLX(triangleModel: triangleModel)
+            }
         }
     }
     
-    private func renderWithMLX() {
+    private func renderGaussianWithMLX() {
         guard let xyzArray, let opacityArray, let scalesArray,
             let rotationArray, let features_dcArray, let features_restArray
         else {
@@ -219,7 +258,7 @@ class RenderViewModel: ObservableObject {
         MLX.GPU.clearCache()
     }
     
-    private func renderWithMetal() {
+    private func renderGaussianWithMetal() {
         guard let metalRenderer = metalRenderer,
               let xyzArray, let opacityArray, let scalesArray,
               let rotationArray, let features_dcArray, let features_restArray
@@ -267,6 +306,50 @@ class RenderViewModel: ObservableObject {
             }
         }
     }
+    
+    private func renderTriangleWithMLX(triangleModel: TriangleModel) {
+        guard let triangleRenderer = triangleRenderer else { return }
+        
+        let camera = Camera(
+            width: width,
+            height: height,
+            focalX: Float(focalX),
+            focalY: Float(focalY),
+            c2w: cameraMatrix
+        )
+        
+        let (render, _, _, _, _) = triangleRenderer.forward(camera: camera, triangleModel: triangleModel)
+        let image = MLX.stopGradient(render)
+        eval(image)
+        
+        DispatchQueue.main.async {
+            self.image = image.toRGBToUIImage()
+        }
+        MLX.GPU.clearCache()
+    }
+    
+    private func renderTriangleWithMetal(triangleModel: TriangleModel) {
+        guard let metalTriangleRenderer = metalTriangleRenderer else { return }
+        
+        let camera = Camera(
+            width: width,
+            height: height,
+            focalX: Float(focalX),
+            focalY: Float(focalY),
+            c2w: cameraMatrix
+        )
+        
+        if let texture = metalTriangleRenderer.render(
+            camera: camera,
+            triangleModel: triangleModel,
+            width: width,
+            height: height
+        ) {
+            DispatchQueue.main.async {
+                self.image = metalTriangleRenderer.textureToUIImage(texture)
+            }
+        }
+    }
 }
 struct RenderView: View {
     let width: Int
@@ -290,15 +373,28 @@ struct RenderView: View {
     }
     var body: some View {
         VStack {
-            HStack {
-                Text("Renderer:")
-                Picker("Renderer", selection: $viewModel.useMetalRenderer) {
-                    Text("MLX").tag(false)
-                    Text("Metal").tag(true)
+            VStack(spacing: 10) {
+                HStack {
+                    Text("Renderer:")
+                    Picker("Renderer", selection: $viewModel.useMetalRenderer) {
+                        Text("MLX").tag(false)
+                        Text("Metal").tag(true)
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                    .frame(width: 150)
+                    Spacer()
                 }
-                .pickerStyle(SegmentedPickerStyle())
-                .frame(width: 150)
-                Spacer()
+                
+                HStack {
+                    Text("Method:")
+                    Picker("Method", selection: $viewModel.renderingMethod) {
+                        Text("Gaussian").tag(SplattingMethod.gaussian)
+                        Text("Triangle").tag(SplattingMethod.triangle)
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                    .frame(width: 150)
+                    Spacer()
+                }
             }
             .padding(.horizontal)
             
@@ -375,9 +471,22 @@ struct RenderView: View {
             }
         }
         .onChange(of: viewModel.useMetalRenderer) { _ in
-            if url != nil && viewModel.xyzArray != nil {
+            if url != nil && (viewModel.xyzArray != nil || viewModel.triangleModel != nil) {
                 renderQueue.async {
                     viewModel.render()
+                }
+            }
+        }
+        .onChange(of: viewModel.renderingMethod) { _ in
+            if let url = url {
+                renderQueue.async {
+                    do {
+                        try viewModel.load(url: url)
+                        viewModel.updateCamera()
+                        viewModel.render()
+                    } catch {
+                        print(error)
+                    }
                 }
             }
         }

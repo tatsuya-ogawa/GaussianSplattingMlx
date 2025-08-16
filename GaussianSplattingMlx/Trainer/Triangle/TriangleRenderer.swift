@@ -109,7 +109,7 @@ class TriangleRenderer {
             // Render triangle pixels
             for y in minY...maxY {
                 for x in minX...maxX {
-                    let pixelCoord = MLX.stacked([Float(x + w), Float(y + h)], axis: -1)
+                    let pixelCoord = MLX.stacked([MLXArray(Float(x + w)), MLXArray(Float(y + h))], axis: -1)
                     
                     // Compute window function weight
                     let weight = computeTriangleWindowFunction(

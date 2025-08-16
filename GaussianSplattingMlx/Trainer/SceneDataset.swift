@@ -8,26 +8,26 @@ class SceneDataset {
     let images: [MLXArray]
     let imageNames: [String]
     
-    init(data: SceneData) {
+    init(data: TrainData) {
         var cameras: [Camera] = []
         var images: [MLXArray] = []
         var imageNames: [String] = []
         
-        let numCameras = data.image.shape[0]
+        let numCameras = data.rgbArray.shape[0]
         
         for i in 0..<numCameras {
             // Create camera from data
             let camera = Camera(
                 width: data.Ws[i].item(Int.self),
                 height: data.Hs[i].item(Int.self),
-                intrinsic: data.Ks[i],
-                c2w: data.c2ws[i],
+                intrinsic: data.intrinsicArray[i],
+                c2w: data.c2wArray[i],
                 znear: 0.1,
                 zfar: 100.0
             )
             
             cameras.append(camera)
-            images.append(data.image[i])
+            images.append(data.rgbArray[i])
             imageNames.append("image_\(i)")
         }
         
@@ -36,7 +36,7 @@ class SceneDataset {
         self.imageNames = imageNames
     }
     
-    convenience init(cameras: [Camera], images: [MLXArray], imageNames: [String]? = nil) {
+    init(cameras: [Camera], images: [MLXArray], imageNames: [String]? = nil) {
         // For manual construction
         self.cameras = cameras
         self.images = images

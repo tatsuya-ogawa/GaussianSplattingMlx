@@ -33,7 +33,7 @@ class TriangleModel {
         
         // Initialize triangle vertices randomly or from point cloud
         self.vertices = MLXArray.zeros([numTriangles, 3, 3])
-        self.opacity = inverse_sigmoid(MLXArray.ones([numTriangles, 1]) * 0.1)
+        self.opacity = inverse_sigmoid(x: MLXArray.ones([numTriangles, 1]) * 0.1)
         self.features_dc = MLXArray.zeros([numTriangles, 3])
         
         let shFeatures = (shDegree + 1) * (shDegree + 1) - 1
@@ -102,7 +102,7 @@ class TriangleModel {
     // MARK: - Training Operations
     
     func resetOpacityToAlpha(alpha: Float) {
-        let newOpacity = inverse_sigmoid(MLXArray.ones(opacity.shape) * alpha)
+        let newOpacity = inverse_sigmoid(x: MLXArray.ones(opacity.shape) * alpha)
         opacity = newOpacity
     }
     

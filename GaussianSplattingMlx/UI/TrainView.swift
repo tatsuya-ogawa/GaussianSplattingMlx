@@ -190,9 +190,9 @@ struct TrainView: View {
         // Initialize the unified trainer based on selected method
         switch viewModel.unifiedTrainer.currentMethod {
         case .gaussian:
-            viewModel.unifiedTrainer.initializeGaussianModel(from: (pointCloud.xyz, pointCloud.rgb))
+            viewModel.unifiedTrainer.initializeGaussianModel(from: (pointCloud.coords, pointCloud.select_channels(channel_names:["R","G","B"])))
         case .triangle:
-            viewModel.unifiedTrainer.initializeTriangleModel(from: (pointCloud.xyz, pointCloud.rgb))
+            viewModel.unifiedTrainer.initializeTriangleModel(from: (pointCloud.coords, pointCloud.select_channels(channel_names:["R","G","B"])))
         }
         
         // Create scene dataset
