@@ -53,8 +53,7 @@ class MetalGaussianRenderer {
     private let assignTilesPipeline: MTLComputePipelineState
     private let clearBuffersPipeline: MTLComputePipelineState
     
-    // Render pipelines
-    private let renderPipelineState: MTLRenderPipelineState
+    // Note: Using compute-based rendering, no traditional render pipeline needed
     
     // Buffers
     private var gaussianBuffer: MTLBuffer?
@@ -118,18 +117,7 @@ class MetalGaussianRenderer {
             return nil
         }
         
-        // Create render pipeline
-        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
-        renderPipelineDescriptor.vertexFunction = library.makeFunction(name: "vertexShader")
-        renderPipelineDescriptor.fragmentFunction = library.makeFunction(name: "fragmentShader")
-        renderPipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        
-        do {
-            self.renderPipelineState = try device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
-        } catch {
-            print("Failed to create render pipeline state: \(error)")
-            return nil
-        }
+        // Note: Using compute-based rendering, no traditional render pipeline needed
         
         allocateBuffers()
     }

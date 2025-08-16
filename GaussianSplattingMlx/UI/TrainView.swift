@@ -57,8 +57,6 @@ class TrainOutputAsset: ObservableObject {
 
 class TrainViewModel: ObservableObject {
     var trainer: GaussianTrainer?
-    @Published var unifiedTrainer = UnifiedTrainer()
-    @Published var configViewModel = TrainingConfigViewModel()
 }
 extension TrainViewModel: GaussianTrainerDelegate {
     func pushSnapshot(url: URL, iteration: Int, timestamp: Date) {
@@ -158,170 +156,18 @@ struct TrainView: View {
     func stopTrain() {
         viewModel.trainer?.stopTrain()
     }
-    
-    func startUnifiedTrain() {
-        isTraining = true
-        DispatchQueue.global().async {
-            Logger.shared.debug("Start Unified Train")
-            do {
-                try doUnifiedTrain()
-            } catch {
-                Logger.shared.error(error: error)
-                DispatchQueue.main.async {
-                    self.isTraining = false
-                }
-            }
-        }
-    }
-    
-    func doUnifiedTrain() throws {
-        let dataLoader = try getDataLoader()
-        let whiteBackground = false
-        let (data, pointCloud, TILE_SIZE) = try dataLoader.load(
-            resizeFactor: 0.5,
-            whiteBackground: whiteBackground
-        )
-        pointCloud.centering(data: data)
-        
-        let cacheLimit = 2 * 1024 * 1024 * 1024
-        MLX.GPU.set(cacheLimit: cacheLimit)
-        MLX.GPU.set(memoryLimit: cacheLimit * 2)
-        
-        // Initialize the unified trainer based on selected method
-        switch viewModel.unifiedTrainer.currentMethod {
-        case .gaussian:
-            viewModel.unifiedTrainer.initializeGaussianModel(from: (pointCloud.coords, pointCloud.select_channels(channel_names:["R","G","B"])))
-        case .triangle:
-            viewModel.unifiedTrainer.initializeTriangleModel(from: (pointCloud.coords, pointCloud.select_channels(channel_names:["R","G","B"])))
-        }
-        
-        // Create scene dataset
-        let scene = SceneDataset(data: data)
-        
-        // Start training
-        viewModel.unifiedTrainer.startTraining(scene: scene)
-        
-        MLX.GPU.clearCache()
-        DispatchQueue.main.async {
-            self.isTraining = false
-        }
-    }
     var body: some View {
-        VStack(spacing: 20) {
-            if viewModel.unifiedTrainer.isTraining {
-                // Training in progress
-                VStack(spacing: 15) {
-                    Text("Training \(viewModel.unifiedTrainer.currentMethod.displayName) Splatting")
-                        .font(.headline)
-                    
-                    TrainStatusView()
-                    
-                    // Training metrics
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text("Iteration: \(viewModel.unifiedTrainer.currentIteration)")
-                            Text("Loss: \(String(format: "%.6f", viewModel.unifiedTrainer.currentLoss))")
-                            Text("PSNR: \(String(format: "%.2f", viewModel.unifiedTrainer.currentPSNR))")
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing) {
-                            Text("Primitives: \(viewModel.unifiedTrainer.numPrimitives)")
-                            Text("Progress: \(String(format: "%.1f%%", viewModel.unifiedTrainer.getTrainingProgress() * 100))")
-                        }
-                    }
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-                    
-                    Button(action: {
-                        viewModel.unifiedTrainer.stopTraining()
-                        stopTrain()
-                    }) {
-                        Text("Stop Training")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+        VStack {
+            if isTraining {
+                TrainStatusView()
+                Button(action: stopTrain) {
+                    Text("Stop Train")
+                }.buttonStyle(.borderedProminent)
             } else {
-                // Training setup
-                VStack(spacing: 15) {
-                    Text("Neural Splatting Training")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    // Method selection
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Splatting Method:")
-                            .font(.headline)
-                        
-                        Picker("Method", selection: $viewModel.unifiedTrainer.currentMethod) {
-                            ForEach(SplattingMethod.allCases, id: \.self) { method in
-                                Text(method.displayName).tag(method)
-                            }
-                        }
-                        .pickerStyle(SegmentedPickerStyle())
-                        
-                        Text(viewModel.unifiedTrainer.getMethodInfo())
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal)
-                    }
-                    .padding()
-                    .background(Color.blue.opacity(0.1))
-                    .cornerRadius(8)
-                    
-                    // Dataset selection
-                    SelectDataSetView(selected: $selected)
-                    
-                    // Training configuration
-                    DisclosureGroup("Training Configuration") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Iterations:")
-                                Spacer()
-                                TextField("Iterations", value: $viewModel.configViewModel.iterations, format: .number)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                                    .frame(width: 100)
-                            }
-                            
-                            HStack {
-                                Text("Learning Rate:")
-                                Spacer()
-                                TextField("LR", value: $viewModel.configViewModel.learningRate, format: .number)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                                    .frame(width: 100)
-                            }
-                            
-                            if viewModel.unifiedTrainer.currentMethod == .triangle {
-                                HStack {
-                                    Text("Smoothness LR:")
-                                    Spacer()
-                                    TextField("Smoothness LR", value: $viewModel.configViewModel.triangleSmoothnessLR, format: .number)
-                                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                                        .frame(width: 100)
-                                }
-                                
-                                HStack {
-                                    Text("Regularization:")
-                                    Spacer()
-                                    TextField("Reg", value: $viewModel.configViewModel.triangleRegularizationWeight, format: .number)
-                                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                                        .frame(width: 100)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-                    
-                    // Start training button
-                    Button(action: startUnifiedTrain) {
-                        Text("Start \(viewModel.unifiedTrainer.currentMethod.displayName) Training")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!selected.isValid)
-                }
+                SelectDataSetView(selected: $selected)
+                Button(action: startTrain) {
+                    Text("Do Train")
+                }.buttonStyle(.borderedProminent).disabled(!selected.isValid)
             }
         }
         .padding()
