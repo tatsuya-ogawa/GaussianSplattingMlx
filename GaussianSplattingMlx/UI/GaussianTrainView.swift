@@ -1,5 +1,5 @@
 //
-//  TrainView.swift
+//  TrainView.swift (now GaussianTrainView)
 //  GaussianSplattingMlx
 //
 //  Created by Tatsuya Ogawa on 2025/06/07.
@@ -55,10 +55,10 @@ class TrainOutputAsset: ObservableObject {
     }
 }
 
-class TrainViewModel: ObservableObject {
+class GaussianTrainViewModel: ObservableObject {
     var trainer: GaussianTrainer?
 }
-extension TrainViewModel: GaussianTrainerDelegate {
+extension GaussianTrainViewModel: GaussianTrainerDelegate {
     func pushSnapshot(url: URL, iteration: Int, timestamp: Date) {
         TrainOutputAsset.shared.pushSnapshot(url: url, iteration: iteration, timestamp: timestamp)
     }
@@ -74,8 +74,8 @@ extension TrainViewModel: GaussianTrainerDelegate {
             render: render, truth: truth, loss: loss, iteration: iteration, timestamp: timestamp)
     }
 }
-struct TrainView: View {
-    @StateObject var viewModel = TrainViewModel()
+struct GaussianTrainView: View {
+    @StateObject var viewModel = GaussianTrainViewModel()
 
     func getDataLoader() throws -> DataLoaderProtocol {
         switch selected.format {
@@ -157,20 +157,49 @@ struct TrainView: View {
         viewModel.trainer?.stopTrain()
     }
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
+            // Header
+            Text("Gaussian Splatting Training")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+            
+            Text("Train neural rendering using point-based primitives with Gaussian distributions")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
             if isTraining {
                 TrainStatusView()
                 Button(action: stopTrain) {
-                    Text("Stop Train")
-                }.buttonStyle(.borderedProminent)
+                    HStack {
+                        Image(systemName: "stop.fill")
+                        Text("Stop Training")
+                    }
+                    .padding()
+                    .background(Color.red)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                }
             } else {
-                SelectDataSetView(selected: $selected)
-                Button(action: startTrain) {
-                    Text("Do Train")
-                }.buttonStyle(.borderedProminent).disabled(!selected.isValid)
+                VStack(spacing: 20) {
+                    SelectDataSetView(selected: $selected)
+                    
+                    Button(action: startTrain) {
+                        HStack {
+                            Image(systemName: "play.fill")
+                            Text("Start Gaussian Training")
+                        }
+                        .padding()
+                        .background(selected.isValid ? Color.blue : Color.gray)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+                    .disabled(!selected.isValid)
+                }
             }
         }
         .padding()
+        .navigationTitle("Gaussian Splatting")
     }
 }
 extension SelectedDataSet {
