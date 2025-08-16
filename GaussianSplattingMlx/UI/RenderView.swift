@@ -64,12 +64,21 @@ class RenderViewModel: ObservableObject {
     let height: Int
     
     @Published var useMetalRenderer: Bool = false
+    @Published var renderingMethod: SplattingMethod = .gaussian
     private let metalRenderer: MetalGaussianRenderer?
+    private var triangleRenderer: TriangleRenderer?
     
     init(width: Int, height: Int) {
         self.width = width
         self.height = height
         self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
+        self.triangleRenderer = TriangleRenderer(
+            active_sh_degree: 4,
+            W: width,
+            H: height,
+            TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
+            whiteBackground: false
+        )
     }
 
     @Published var image: UIImage?
