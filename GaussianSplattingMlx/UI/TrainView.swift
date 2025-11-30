@@ -64,8 +64,8 @@ extension TrainViewModel: GaussianTrainerDelegate {
         TrainOutputAsset.shared.pushSnapshot(url: url, iteration: iteration, timestamp: timestamp)
     }
 
-    func pushLoss(loss: Float, iteration: Int?, timestamp: Date) {
-        LossChartData.shared.push(loss: loss, iteration: iteration, timestamp: timestamp)
+    func pushLoss(loss: Float, iteration: Int?, fps: Float?, timestamp: Date) {
+        LossChartData.shared.push(loss: loss, iteration: iteration, fps: fps, timestamp: timestamp)
     }
 
     func pushImageData(
@@ -325,7 +325,7 @@ struct TrainView: View {
         .padding()
         .sheet(isPresented: $showShareSheet) {
             if let url = latestCaptureURL {
-                ShareSheet(activityItems: [url])
+                ShareSheet(items: [url])
             }
         }
         .onAppear {
@@ -344,17 +344,4 @@ extension SelectedDataSet {
             return true
         }
     }
-}
-
-struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-
-    func updateUIViewController(
-        _ uiViewController: UIActivityViewController,
-        context: Context
-    ) {}
 }

@@ -95,11 +95,24 @@ struct TrainStatusView: View {
     @State private var selected: LossData? = nil
    
     var body: some View {
-        VStack {
-            LossChartView()
-            HStack {
-                TrainImageListView()
-                SnapshotRenderView()
+        ScrollView {
+            VStack {
+                LossChartView()
+                ViewThatFits {
+                    HStack(spacing: 0) {
+                        TrainImageListView()
+                            .frame(minWidth: 300, maxHeight: 400)
+                        Divider()
+                        SnapshotRenderView()
+                            .frame(minWidth: 800)
+                    }
+                    VStack(spacing: 0) {
+                        TrainImageListView()
+                            .frame(height: 300)
+                        Divider()
+                        SnapshotRenderView()
+                    }
+                }
             }
         }
     }

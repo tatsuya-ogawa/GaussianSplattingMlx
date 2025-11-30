@@ -12,21 +12,24 @@ struct LossData: Identifiable {
     let timestamp: Date
     let loss: Float
     let iteration: Int?
+    let fps: Float?
 }
 
 class LossChartData: ObservableObject {
     @Published private(set) var data: [LossData] = []
     @Published private(set) var iteration: Int? = nil
+    @Published private(set) var currentFPS: Float? = nil
     static let shared = LossChartData()
     private init() {}
 
     let maxVisibleCount = 100
 
-    func push(loss: Float, iteration: Int? = nil, timestamp: Date = Date()) {
+    func push(loss: Float, iteration: Int? = nil, fps: Float? = nil, timestamp: Date = Date()) {
         DispatchQueue.main.async { [self] in
             self.iteration = iteration
+            self.currentFPS = fps
             self.data.append(
-                LossData(timestamp: timestamp, loss: loss, iteration: iteration)
+                LossData(timestamp: timestamp, loss: loss, iteration: iteration, fps: fps)
             )
             if self.data.count > maxVisibleCount {
                 data.removeFirst(data.count - maxVisibleCount)
@@ -46,7 +49,15 @@ struct LossChartView: View {
 
     var body: some View {
         VStack {
-            Text("Iteration \(chartData.iteration ?? 0)")
+            HStack {
+                Text("Iteration \(chartData.iteration ?? 0)")
+                Spacer()
+                if let fps = chartData.currentFPS {
+                    Text(String(format: "%.1f frame/s", fps))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal)
             Chart(chartData.data) { item in
                 LineMark(
                     x: .value("Time", item.timestamp),
@@ -63,6 +74,9 @@ struct LossChartView: View {
                                 Text("iter: \(iter)").font(.caption2)
                             }
                             Text(String(format: "loss: %.4f", item.loss)).font(.caption2)
+                            if let fps = item.fps {
+                                Text(String(format: "fps: %.1f", fps)).font(.caption2)
+                            }
                             Text(item.timestamp, style: .time).font(.caption2)
                         }
                         .padding(4)
