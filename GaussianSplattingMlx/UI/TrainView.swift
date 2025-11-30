@@ -7,6 +7,7 @@
 
 import MLX
 import SwiftUI
+import UIKit
 
 struct TrainSnapshot: Identifiable ,Hashable{
     let id = UUID()
@@ -76,6 +77,9 @@ extension TrainViewModel: GaussianTrainerDelegate {
 }
 struct TrainView: View {
     @StateObject var viewModel = TrainViewModel()
+    @State private var latestCaptureURL: URL?
+    @State private var showShareSheet: Bool = false
+    @State var captureEnabled: Bool = false
 
     func getDataLoader() throws -> DataLoaderProtocol {
         switch selected.format {
@@ -99,28 +103,81 @@ struct TrainView: View {
             }
         }
     }
+    private func makeCaptureURL() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "captures", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let fileName = "mlx_capture_\(formatter.string(from: Date())).gputrace"
+        return dir.appendingPathComponent(fileName)
+    }
+    
+    private func loadOriginalResolution() {
+        guard selected.isValid else { return }
+        
+        isLoadingResolution = true
+        DispatchQueue.global().async {
+            do {
+                let dataLoader = try getDataLoader()
+                let (width, height) = try dataLoader.getOriginalImageSize()
+                
+                DispatchQueue.main.async {
+                    self.originalWidth = width
+                    self.originalHeight = height
+                    self.isLoadingResolution = false
+                }
+            } catch {
+                Logger.shared.error(error: error)
+                DispatchQueue.main.async {
+                    self.isLoadingResolution = false
+                }
+            }
+        }
+    }
     func doTrain() throws {
+        let captureURL: URL? = captureEnabled ? try makeCaptureURL() : nil
+        if let captureURL {
+            DispatchQueue.main.async {
+                self.latestCaptureURL = captureURL
+            }
+            MLX.GPU.startCapture(url: captureURL)
+        } else {
+            DispatchQueue.main.async {
+                self.latestCaptureURL = nil
+            }
+        }
+        defer {
+            if let captureURL {
+                MLX.GPU.stopCapture(url: captureURL)
+            }
+        }
         let dataLoader = try getDataLoader()
         let whiteBackground = false
         let (data, pointCloud, TILE_SIZE) = try dataLoader.load(
-            resizeFactor: 0.5,
+            resizeFactor: resizeFactor,
             whiteBackground: whiteBackground
         )
         pointCloud.centering(data: data)
 
-        let cacheLimit = 2 * 1024 * 1024 * 1024
+        let cacheLimit = GaussianTrainer.defaultCacheLimit()
+        let manualClearCache = GaussianTrainer.needEagerClearCache()
+        let memoryLimit = Int(min(UInt64(cacheLimit) * 2, UInt64(Int.max)))
         MLX.GPU.set(cacheLimit: cacheLimit)
-        MLX.GPU.set(memoryLimit: cacheLimit * 2)
+        MLX.GPU.set(memoryLimit: memoryLimit)
         let sh_degree = 4
+        let safeSampleCount = max(1, sampleCount)
+        let safeIterationCount = max(1, iterationCount)
         let gaussModel = GaussianTrainer.createModel(
             sh_degree: sh_degree,
             pointCloud: pointCloud,
-            sampleCount: 1 << 14
+            sampleCount: safeSampleCount,
+            manualClearCache: manualClearCache
         )
 
         viewModel.trainer = GaussianTrainer(
             model: gaussModel,
-            data: data,
+            data: data.optimized(),
             gaussRender: GaussianRenderer(
                 active_sh_degree: sh_degree,
                 W: data.Ws[0].item(Int.self),
@@ -128,21 +185,32 @@ struct TrainView: View {
                 TILE_SIZE: TILE_SIZE,
                 whiteBackground: whiteBackground
             ),
-            iterationCount: 30000,
+            iterationCount: safeIterationCount,
             cacheLimit: cacheLimit,
+            manualClearCache: manualClearCache,
             outputDirectoryURL: TrainOutputAsset.shared.getOutputDirectory()
         )
         viewModel.trainer?.delegate = viewModel
         viewModel.trainer?.startTrain()
         MLX.GPU.clearCache()
-        isTraining = false
+        DispatchQueue.main.async {
+            self.isTraining = false
+        }
     }
     @State var isTraining: Bool = false
+    @State var iterationCount: Int = 30000
+    @State var sampleCount: Int = 1 << 14
+    @State var resizeFactor: Double = 0.5
+    @State var originalWidth: Int = 0
+    @State var originalHeight: Int = 0
+    @State var isLoadingResolution: Bool = false
     @State var selected: SelectedDataSet = SelectedDataSet(
         format: .colmap,
         url: nil
     )
     func startTrain() {
+        latestCaptureURL = nil
+        showShareSheet = false
         isTraining = true
         DispatchQueue.global().async {
             Logger.shared.debug("Start Train")
@@ -150,6 +218,9 @@ struct TrainView: View {
                 try doTrain()
             } catch {
                 Logger.shared.error(error: error)
+                DispatchQueue.main.async {
+                    self.isTraining = false
+                }
             }
         }
     }
@@ -165,12 +236,103 @@ struct TrainView: View {
                 }.buttonStyle(.borderedProminent)
             } else {
                 SelectDataSetView(selected: $selected)
-                Button(action: startTrain) {
-                    Text("Do Train")
-                }.buttonStyle(.borderedProminent).disabled(!selected.isValid)
+                    .onChange(of: selected) { _ in
+                        loadOriginalResolution()
+                    }
+                
+                VStack(alignment: .leading, spacing: 12) {
+                    // Dataset resolution information
+                    if selected.isValid {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Dataset Resolution")
+                                .font(.headline)
+                            if isLoadingResolution {
+                                HStack {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                    Text("Loading resolution...")
+                                        .foregroundColor(.secondary)
+                                }
+                            } else if originalWidth > 0 && originalHeight > 0 {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Original: \(originalWidth) × \(originalHeight)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                    Text("Output: \(Int(Double(originalWidth) * resizeFactor)) × \(Int(Double(originalHeight) * resizeFactor))")
+                                        .font(.subheadline)
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    
+                    HStack {
+                        Text("Iteration Count")
+                        TextField(
+                            "30000",
+                            value: $iterationCount,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.numberPad)
+                        .frame(width: 140)
+                    }
+                    
+                    HStack {
+                        Text("Resize Factor")
+                        TextField(
+                            "0.5",
+                            value: $resizeFactor,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.decimalPad)
+                        .frame(width: 140)
+                    }
+                    
+                    Toggle("Capture GPU trace", isOn: $captureEnabled)
+                        .toggleStyle(.switch).frame(width: 240)
+                    
+                    HStack {
+                        Text("Sample Count")
+                        TextField(
+                            "16384",
+                            value: $sampleCount,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.numberPad)
+                        .frame(width: 140)
+                    }
+                }
+                HStack(spacing: 12) {
+                    Button(action: startTrain) {
+                        Text("Do Train")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!selected.isValid)
+
+                    if latestCaptureURL != nil {
+                        Button(action: { showShareSheet = true }) {
+                            Text("Share Capture")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             }
         }
         .padding()
+        .sheet(isPresented: $showShareSheet) {
+            if let url = latestCaptureURL {
+                ShareSheet(activityItems: [url])
+            }
+        }
+        .onAppear {
+            if selected.isValid {
+                loadOriginalResolution()
+            }
+        }
     }
 }
 extension SelectedDataSet {
@@ -182,4 +344,17 @@ extension SelectedDataSet {
             return true
         }
     }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIActivityViewController,
+        context: Context
+    ) {}
 }

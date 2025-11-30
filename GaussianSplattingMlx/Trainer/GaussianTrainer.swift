@@ -52,6 +52,64 @@ class TrainData {
     ) {
         return (Hs, Ws, intrinsicArray, c2wArray)
     }
+    
+    /// Make all MLXArrays contiguous to optimize memory layout
+    /// - Returns: A new optimized TrainData instance
+    func optimized() -> TrainData {
+        return TrainData(
+            Hs: MLX.contiguous(Hs),
+            Ws: MLX.contiguous(Ws),
+            intrinsicArray: MLX.contiguous(intrinsicArray),
+            c2wArray: MLX.contiguous(c2wArray),
+            rgbArray: MLX.contiguous(rgbArray),
+            alphaArray: MLX.contiguous(alphaArray),
+            depthArray: depthArray != nil ? MLX.contiguous(depthArray!) : nil
+        )
+    }
+    
+    /// Optimize all MLXArrays to be contiguous in-place
+    /// - Note: Only c2wArray can be updated directly as it's a var
+    func optimizeInPlace() {
+        // c2wArray is mutable so it can be updated directly
+        c2wArray = MLX.contiguous(c2wArray)
+        // Other properties are let, so use optimized() instead
+    }
+    
+    /// Get estimated memory usage in bytes
+    /// - Returns: Estimated memory usage
+    func estimateMemoryUsage() -> Int {
+        var totalSize = 0
+        totalSize += Hs.size * 4  // Float32 = 4 bytes
+        totalSize += Ws.size * 4
+        totalSize += intrinsicArray.size * 4
+        totalSize += c2wArray.size * 4
+        totalSize += rgbArray.size * 4
+        totalSize += alphaArray.size * 4
+        if let depthArray = depthArray {
+            totalSize += depthArray.size * 4
+        }
+        return totalSize
+    }
+    
+    /// Get shape information of TrainData
+    /// - Returns: Information string containing shapes and memory usage
+    func getShapeInfo() -> String {
+        var info = "TrainData Information:\n"
+        info += "- Batch Size: \(Hs.shape[0])\n"
+        info += "- Hs: \(Hs.shape)\n"
+        info += "- Ws: \(Ws.shape)\n"
+        info += "- IntrinsicArray: \(intrinsicArray.shape)\n"
+        info += "- C2wArray: \(c2wArray.shape)\n"
+        info += "- RgbArray: \(rgbArray.shape)\n"
+        info += "- AlphaArray: \(alphaArray.shape)\n"
+        if let depthArray = depthArray {
+            info += "- DepthArray: \(depthArray.shape)\n"
+        } else {
+            info += "- DepthArray: nil\n"
+        }
+        info += "- Estimated Memory: \(estimateMemoryUsage()) bytes"
+        return info
+    }
 }
 protocol GaussianTrainerDelegate: AnyObject {
     func pushLoss(loss: Float, iteration: Int?, timestamp: Date)
@@ -70,6 +128,7 @@ class GaussianTrainer {
     var iterationCount: Int
     var outputDirectoryURL: URL?
     var cacheLimit: Int
+    var manualClearCache: Bool
     weak var delegate: GaussianTrainerDelegate?
     
     // Split and prune parameters
@@ -80,16 +139,38 @@ class GaussianTrainer {
     var pruneInterval: Int = 100
     var densifyFromIter: Int = 500
     var densifyUntilIter: Int = 15000
+    var maxGaussians: Int = 1_000_000  // Maximum number of Gaussians to prevent unbounded growth
     
     // Tracking gradients for densification
-    var xyzGradAccumulation: MLXArray = MLXArray.zeros([0, 3])
+    var xyzGradAccumulation: MLXArray = MLXArray.zeros([0])  // Scalar gradient magnitudes
     var denomGradAccumulation: MLXArray = MLXArray.zeros([0])
+    
+    static func defaultCacheLimit() -> Int {
+        let physicalMemory = ProcessInfo.processInfo.physicalMemory  // bytes
+        let sixteenGB: UInt64 = 16 * 1024 * 1024 * 1024
+        let fallback: UInt64 = 2 * 1024 * 1024 * 1024
+        let chosen = physicalMemory >= sixteenGB ? physicalMemory / 2 : fallback
+        return Int(min(chosen, UInt64(Int.max)))
+    }
+    
+    static func needEagerClearCache() -> Bool {
+        let physicalMemory = ProcessInfo.processInfo.physicalMemory  // bytes
+        let sixteenGB: UInt64 = 16 * 1024 * 1024 * 1024
+        // If the machine is under 16GB, keep clearing to be safe; otherwise skip by default.
+        return physicalMemory < sixteenGB
+    }
+    
+    private func clearCacheIfNeeded() {
+        guard manualClearCache else { return }
+        MLX.GPU.clearCache()
+    }
     init(
         model: GaussModel,
         data: TrainData,
         gaussRender: GaussianRenderer,
         iterationCount: Int,
-        cacheLimit: Int = 2 * 1024 * 1024 * 1024,
+        cacheLimit: Int = GaussianTrainer.defaultCacheLimit(),
+        manualClearCache: Bool = GaussianTrainer.needEagerClearCache(),
         outputDirectoryURL: URL? = nil,
         saveSnapshotPerIteration: Int = 100
     ) {
@@ -98,6 +179,7 @@ class GaussianTrainer {
         self.gaussRender = gaussRender
         self.iterationCount = iterationCount
         self.cacheLimit = cacheLimit
+        self.manualClearCache = manualClearCache
         self.outputDirectoryURL = outputDirectoryURL
         self.save_snapshot_per_iteration = saveSnapshotPerIteration
         
@@ -120,7 +202,8 @@ class GaussianTrainer {
         return (camera, rgb, mask, depth)
     }
     func addGradientAccumulation(xyzGrad: MLXArray) {
-        let gradNorm = MLX.sum(MLX.square(xyzGrad), axes: [1])
+        // Calculate gradient magnitude (L2 norm)
+        let gradNorm = MLX.sqrt(MLX.sum(MLX.square(xyzGrad), axes: [1]))
         let numPoints = xyzGrad.shape[0]
         
         if xyzGradAccumulation.shape[0] != numPoints {
@@ -152,9 +235,35 @@ class GaussianTrainer {
         
         let numPoints = _xyz.shape[0]
         
-        // Calculate average gradient magnitude
-        let avgGrads = xyzGradAccumulation / denomGradAccumulation.expandedDimensions(axes: [1])
-        let gradMagnitude = MLX.sqrt(avgGrads)
+        // Check if we've reached the maximum number of Gaussians
+        if numPoints >= maxGaussians {
+            Logger.shared.info("Reached maximum Gaussians limit: \(maxGaussians). Skipping densification.")
+            // Still perform pruning
+            let opacity = MLX.sigmoid(_opacity)
+            let pruneMask = (opacity .< minOpacity).reshaped([-1])
+            if MLX.sum(pruneMask.asType(.int32)).item(Int.self) > 0 {
+                let keepMask: MLXArray = .!pruneMask
+                let keepIndices = conditionToIndices(condition: keepMask)
+                (_xyz, _features_dc, _features_rest, _scales, _rotation, _opacity) = 
+                    pruneGaussians(
+                        xyz: _xyz, features_dc: _features_dc, features_rest: _features_rest,
+                        scales: _scales, rotation: _rotation, opacity: _opacity,
+                        indices: keepIndices
+                    )
+                model._xyz = _xyz
+                model._features_dc = _features_dc
+                model._features_rest = _features_rest
+                model._scales = _scales
+                model._rotation = _rotation
+                model._opacity = _opacity
+            }
+            resetGradientAccumulation()
+            return
+        }
+        
+        // Calculate average gradient magnitude (already computed as magnitude in addGradientAccumulation)
+        let avgGrads = xyzGradAccumulation / denomGradAccumulation
+        let gradMagnitude = avgGrads
         
         // Get current scales and opacity
         let scales = MLX.exp(_scales)
@@ -219,6 +328,8 @@ class GaussianTrainer {
         resetGradientAccumulation()
     }
     
+    /// Split large Gaussians into two smaller ones
+    /// Each Gaussian is replaced by two Gaussians with reduced scale and slightly offset positions
     func splitGaussians(
         xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
         scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
@@ -232,29 +343,32 @@ class GaussianTrainer {
         let selectedRotation = rotation[indices]
         let selectedOpacity = opacity[indices]
         
-        // Scale down the selected Gaussians
+        // Scale down the selected Gaussians (divide by 1.6, so subtract log(1.6))
         let newScales = selectedScales - MLX.log(MLXArray(1.6))
         
         // Create two new Gaussians for each split
+        // Sample positions based on the actual Gaussian scale for geometry-aware splitting
         let numSplit = indices.shape[0]
-        let noise = MLXRandom.normal([numSplit, 3]) * 0.1
+        let baseNoise = MLXRandom.normal([numSplit, 3])
+        let actualScales = MLX.exp(selectedScales)
+        let scaledNoise = baseNoise * MLX.mean(actualScales, axes: [1], keepDims: true) * 0.1
         
-        let newXYZ1 = selectedXYZ + noise
-        let newXYZ2 = selectedXYZ - noise
+        let newXYZ1 = selectedXYZ + scaledNoise
+        let newXYZ2 = selectedXYZ - scaledNoise
         
         // Create mask to keep Gaussians that are NOT being split
         let totalPoints = xyz.shape[0]
-        var keepMask = MLXArray.ones([totalPoints], dtype: .bool)
-        
+        let indicesRaw = indices.asArray(Int.self)
+        var keepMask = Swift.Array(repeating: true, count: totalPoints)
         // Set split indices to false in keep mask
-        for i in 0..<indices.shape[0] {
-            let idx = indices[i].item(Int.self)
+        for i in 0..<indicesRaw.count {
+            let idx = indicesRaw[i]
             if idx < totalPoints {
-                keepMask[idx] = MLXArray(false)
+                keepMask[idx] = false
             }
         }
         
-        let keepIndices = conditionToIndices(condition: keepMask)
+        let keepIndices = conditionToIndices(condition: MLXArray(keepMask))
         
         // Keep non-split Gaussians and add the two new ones for each split
         let keptXYZ = xyz[keepIndices]
@@ -274,6 +388,8 @@ class GaussianTrainer {
         return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
     }
     
+    /// Clone Gaussians by duplicating them with slight position offset
+    /// Used for small Gaussians in high-gradient areas
     func cloneGaussians(
         xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
         scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
@@ -287,7 +403,7 @@ class GaussianTrainer {
         let selectedRotation = rotation[indices]
         let selectedOpacity = opacity[indices]
         
-        // Add small noise to position
+        // Add small noise to position to avoid exact duplicates
         let noise = MLXRandom.normal(selectedXYZ.shape) * 0.01
         let newXYZ = selectedXYZ + noise
         
@@ -302,6 +418,8 @@ class GaussianTrainer {
         return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
     }
     
+    /// Remove Gaussians by keeping only those at specified indices
+    /// Used to prune low-opacity Gaussians
     func pruneGaussians(
         xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
         scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
@@ -459,30 +577,32 @@ class GaussianTrainer {
                 Logger.shared.debug("update \(i)th param end")
             }
             eval(optimizer)
-            if MLX.GPU.snapshot().cacheMemory > cacheLimit {
-                MLX.GPU.clearCache()
+            if manualClearCache && MLX.GPU.snapshot().cacheMemory > cacheLimit {
+                clearCacheIfNeeded()
             }
             if iteration % self.save_snapshot_per_iteration == 0 {
                 self.save_snapshot(iteration: iteration, params: params)
-                MLX.GPU.clearCache()
+                clearCacheIfNeeded()
             }
             if iteration % self.split_and_prune_per_iteration == 0 {
                 self.split_and_prune(params: params, states: states, iteration: iteration)
-                // Update params after split_and_prune
+                // Update params after split_and_prune since number of Gaussians may have changed
                 params = model.getParams()
                 // Reinitialize optimizer states for new parameters
+                // This is necessary because split/clone operations change the parameter count
                 states = params.map {
                     optimizer.newState(parameter: $0)
                 }
-                MLX.GPU.clearCache()
+                clearCacheIfNeeded()
             }
         }
-        MLX.GPU.clearCache()
+        clearCacheIfNeeded()
     }
     static func createModel(
         sh_degree: Int,
         pointCloud: PointCloud,
-        sampleCount: Int = 1 << 14
+        sampleCount: Int = 1 << 14,
+        manualClearCache: Bool = GaussianTrainer.needEagerClearCache()
     ) -> GaussModel {
         Logger.shared.debug("get point clouds...")
         Logger.shared.debug("Random sample....")
@@ -490,7 +610,8 @@ class GaussianTrainer {
         let gaussModel = GaussModel.create_from_pcd(
             pcd: raw_points,
             sh_degree: sh_degree,
-            debug: false
+            debug: false,
+            manualClearCache: manualClearCache
         )
         return gaussModel
     }

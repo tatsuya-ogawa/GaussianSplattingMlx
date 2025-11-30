@@ -52,10 +52,10 @@ struct TinyTests {
         let data = MLXArray(dataArray, [N, D])
         let indices = MLXArray(indexArray)
 
-        // 4. MLXでindexing: [2000, 3]になるはず
+        // 4. MLX indexing: should result in [2000, 3]
         let ret = data[indices]
 
-        // 5. 検証用: プリミティブ配列でground truth生成
+        // 5. For verification: generate ground truth with primitive arrays
         var expected: [Float] = []
         for idx in indexArray {
             let base = Int(idx) * D

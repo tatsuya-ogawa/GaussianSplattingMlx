@@ -169,15 +169,15 @@ struct GaussianSplattingMlxTests {
     }
 
     @Test func test_get_max_covariance() throws {
-        // 2つの共分散行列（バッチ2個）
+        // Two covariance matrices (batch of 2)
         let covData: [Float] = [
-            2.0, 0.0,  // 1個目
+            2.0, 0.0,  // 1st matrix
             0.0, 1.0,
 
-            1.0, 0.5,  // 2個目
+            1.0, 0.5,  // 2nd matrix
             0.5, 2.0,
         ]
-        let cov2d = MLXArray(covData, [2, 2, 2])  // [バッチ数, 2, 2]
+        let cov2d = MLXArray(covData, [2, 2, 2])  // [batch_size, 2, 2] 2, 2]
         let result = get_max_covariance(cov2d: cov2d)
 
         let expectedCpu: [Float] = [2.0, Float(1.5 + sqrt(0.5))]
@@ -189,15 +189,15 @@ struct GaussianSplattingMlxTests {
     }
 
     @Test func test_get_radius() throws {
-        // 2つの共分散行列（バッチ2個）
+        // Two covariance matrices (batch of 2)
         let covData: [Float] = [
-            2.0, 0.0,  // 1個目
+            2.0, 0.0,  // first
             0.0, 1.0,
 
-            1.0, 0.5,  // 2個目
+            1.0, 0.5,  // second
             0.5, 2.0,
         ]
-        let cov2d = MLXArray(covData, [2, 2, 2])  // [バッチ数, 2, 2]
+        let cov2d = MLXArray(covData, [2, 2, 2])  // [batch_size, 2, 2]
         let result = get_radius(cov2d: cov2d)
 
         let expectedCpu: [Float] = [6.0, 6.0]
@@ -266,13 +266,13 @@ struct GaussianSplattingMlxTests {
         #expect(MLX.allClose(rect_max, expectedMax).item())
     }
     @Test func test_build_covariance_2d() throws {
-        // 1点だけのシンプルなケースで
+        // Simple case with just one point
         let mean3dData: [Float] = [
-            0.0, 0.0, 1.0,  // 原点から1だけZ方向
+            0.0, 0.0, 1.0,  // 1 unit in Z direction from origin
         ]
         let mean3d = MLXArray(mean3dData, [1, 3])
 
-        // 3D共分散: 対角行列
+        // 3D covariance: diagonal matrix
         let cov3dData: [Float] = [
             4.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
@@ -280,9 +280,9 @@ struct GaussianSplattingMlxTests {
         ]
         let cov3d = MLXArray(cov3dData, [1, 3, 3])
 
-        // ビュー・射影行列は単位行列
+        // View and projection matrices are identity matrices
         let viewMatrix = simd_double4x4(1.0).toMLXArray()
-        // fov, focalも直感的な値
+        // FOV and focal with intuitive values
         let fovX = MLXArray(Float.pi / 2)  // 90°
         let fovY = MLXArray(Float.pi / 2)
         let focalX = MLXArray(1.0 as Float)
@@ -299,10 +299,10 @@ struct GaussianSplattingMlxTests {
         )
 
         let expectedData: [Float] = [
-            4.3, 0.3,  // 1点目
+            4.3, 0.3,  // first point
             0.0, 1.0,
 
-            4.0, 0.0,  // 2点目
+            4.0, 0.0,  // second point
             0.3, 1.3,
         ]
         let expected = MLXArray(expectedData, [2, 2, 2])
@@ -310,7 +310,7 @@ struct GaussianSplattingMlxTests {
         #expect(MLX.allClose(result, expected, atol: 1e-5).item())
     }
     @Test func test_matrixInverse2d() throws {
-        // 2つの2x2行列
+        // Two 2x2 matrices
         let matrixData: [Float] = [
             1, 2,
             3, 4,
@@ -321,9 +321,9 @@ struct GaussianSplattingMlxTests {
         let m = MLXArray(matrixData, [2, 2, 2])  // shape: [2, 2, 2]
         let inv = matrixInverse2d(m)
 
-        // 期待値計算
-        // 1つ目: [[1,2],[3,4]] → 逆行列 [[-2,1],[1.5,-0.5]]
-        // 2つ目: [[2,0],[0,2]] → 逆行列 [[0.5,0],[0,0.5]]
+        // Expected value calculation
+        // First: [[1,2],[3,4]] → inverse [[-2,1],[1.5,-0.5]]
+        // Second: [[2,0],[0,2]] → inverse [[0.5,0],[0,0.5]]
         let expectedData: [Float] = [
             -2, 1,
             1.5, -0.5,
@@ -337,7 +337,7 @@ struct GaussianSplattingMlxTests {
         #expect(MLX.allClose(inv, expected, atol: 1e-5).item())
     }
     @Test func test_build_color_camera() throws {
-        // 1. カメラ定義（原点に設置、focal100, 256x256画素）
+        // 1. Camera definition (placed at origin, focal=100, 256x256 pixels)
         let width = 256
         let height = 256
         let focal = 100.0
@@ -346,7 +346,7 @@ struct GaussianSplattingMlxTests {
         intrinsic[1, 1] = focal
         intrinsic[2, 2] = 1.0
         intrinsic[3, 3] = 1.0
-        let c2w = matrix_double4x4(1.0)  // カメラ座標系＝ワールド座標系
+        let c2w = matrix_double4x4(1.0)  // Camera coordinate system = World coordinate system
         let camera = Camera(
             width: width,
             height: height,
@@ -354,17 +354,17 @@ struct GaussianSplattingMlxTests {
             c2w: c2w.toMLXArray()
         )
 
-        // 2. means3D: 2点（ダミー）
+        // 2. means3D: 2 points (dummy)
         let means3DData: [Float] = [
             1.0, 2.0, 3.0,
             -2.0, 1.0, 0.0,
         ]
         let means3D = MLXArray(means3DData, [2, 3])
 
-        // 3. shs: [2, 3, 1]（RGB各chごとにSH=degree0のみ、RGB値をわかりやすく）
+        // 3. shs: [2, 3, 1] (SH=degree0 only for each RGB channel, clear RGB values)
         let shsData: [Float] = [
-            1.0, 0.5, -0.5,  // 1点目RGB
-            -0.5, 0.0, 0.5,  // 2点目RGB
+            1.0, 0.5, -0.5,  // first point RGB
+            -0.5, 0.0, 0.5,  // second point RGB
         ]
         let shs = MLXArray(shsData, [2, 3, 1])
         // 4. degree=0
@@ -386,7 +386,7 @@ struct GaussianSplattingMlxTests {
         print("expected:", expected0)
         #expect(MLX.allClose(out0, expected0, atol: 1e-6).item())
 
-        // 5. degree=1テスト
+        // 5. degree=1 test
         // shs: [2,3,4] RGB×SH4
         let shs1Data: [Float] = [
             1, 0.2, 0.3, 0.4,  // R
