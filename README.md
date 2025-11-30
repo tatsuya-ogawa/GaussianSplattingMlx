@@ -6,6 +6,8 @@ This repository contains a training implementation of 3D Gaussian Splatting usin
 
 Gaussian Splatting is a novel approach to Neural Radiance Fields (NeRF) that offers real-time rendering capabilities while maintaining high visual fidelity. This implementation leverages MLX - Apple's efficient machine learning framework designed specifically for Apple Silicon.
 
+**Note:** This implementation uses the **OpenCV coordinate system** for all camera operations and 3D transformations. When loading data from other coordinate systems (e.g., Blender), appropriate conversions are applied automatically.
+
 ## References
 
 This implementation is based on:

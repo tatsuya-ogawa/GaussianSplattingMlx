@@ -58,24 +58,24 @@ struct TrainTests {
         let h = 32
         let w = 32
 
-        // まったく同じ画像
+        // Exactly identical images
         let img1 = MLXArray.ones([batch, h, w, channel])
         let img2 = MLXArray.ones([batch, h, w, channel])
 
         let ssimVal = ssim(img1: img1, img2: img2)
-        print("SSIM (identical): \(ssimVal)")  // 1.0 に近いはず
+        print("SSIM (identical): \(ssimVal)")  // Should be close to 1.0
 
-        // ノイズを加えた画像
+        // Image with added noise
         let totalCount = batch * channel * h * w
         let noiseData = randomNormalArray(count: totalCount, mean: 0.0, std: 0.1)
         let noise = MLXArray(noiseData, [batch, h, w, channel])
         let img2_noisy = img1 + noise
         let ssimValNoisy = ssim(img1: img1, img2: img2_noisy)
-        print("SSIM (noisy): \(ssimValNoisy)")  // 1.0 より小さいはず
+        print("SSIM (noisy): \(ssimValNoisy)")  // Should be less than 1.0
 
-        // まったく違う画像
+        // Completely different images
         let img3 = MLXArray.zeros([batch, h, w, channel])
         let ssimValDiff = ssim(img1: img1, img2: img3)
-        print("SSIM (all ones vs all zeros): \(ssimValDiff)")  // 0.0に近いはず
+        print("SSIM (all ones vs all zeros): \(ssimValDiff)")  // Should be close to 0.0
     }
 }

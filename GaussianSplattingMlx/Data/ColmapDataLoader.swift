@@ -72,6 +72,24 @@ class ColmapDataLoader {
         )
         try FileManager.default.unzipItem(at: zipUrl, to: targetDirUrl)
     }
+    
+    func getOriginalImageSize() throws -> (width: Int, height: Int) {
+        // Get the size of the first image file
+        let (camMap, poses) = try colmapReadCamerasAndPoses(binRoot: getBinRoot(), imageRoot: getImageRoot())
+        guard let firstPose = poses.first,
+              let camera = camMap[firstPose.cameraId] else {
+            throw NSError(domain: "No camera data found", code: 1)
+        }
+        return (width: Int(camera.width), height: Int(camera.height))
+    }
+    
+    func getBinRoot() -> URL {
+        fatalError("Subclass must implement getBinRoot")
+    }
+    
+    func getImageRoot() -> URL {
+        fatalError("Subclass must implement getImageRoot")
+    }
     func readImage(
         path: URL,
         resizeFactor: Double
@@ -488,10 +506,10 @@ class UserColmapDataLoader: ColmapDataLoader, DataLoaderProtocol {
         return URL(fileURLWithPath: tmpPath)
             .appendingPathComponent(target_dir_name)
     }
-    func getBinRoot() -> URL {
+    override func getBinRoot() -> URL {
         return getDataDir().appendingPathComponent("colmap/sparse/0")
     }
-    func getImageRoot() -> URL {
+    override func getImageRoot() -> URL {
         return getDataDir().appendingPathComponent("images")
     }
     init(zipUrl: URL) {
@@ -515,10 +533,10 @@ class DemoColmapDataLoader: ColmapDataLoader, DataLoaderProtocol {
         return URL(fileURLWithPath: tmpPath)
             .appendingPathComponent(target_dir_name)
     }
-    func getBinRoot() -> URL {
+    override func getBinRoot() -> URL {
         return getDataDir().appendingPathComponent("colmap/sparse/0")
     }
-    func getImageRoot() -> URL {
+    override func getImageRoot() -> URL {
         return getDataDir().appendingPathComponent("images")
     }
     func getDownloadRoot() -> URL {

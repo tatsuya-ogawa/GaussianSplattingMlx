@@ -53,6 +53,21 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
         let decoder = JSONDecoder()
         return try decoder.decode(T.self, from: data)
     }
+    
+    func getOriginalImageSize() throws -> (width: Int, height: Int) {
+        try downloadDemoData()
+        let folder = getDataDir()
+        let infoURL = folder.appendingPathComponent("info.json")
+        let sceneInfo = try readFileJSON(infoURL, as: SceneData.self)
+        
+        guard let firstImage = sceneInfo.images.first else {
+            throw NSError(domain: "No images found in scene data", code: 1)
+        }
+        
+        let hw = firstImage.hw
+        return (width: hw[1], height: hw[0]) // [H, W] -> (W, H)
+    }
+    
     func readCamera(folder: URL) throws -> (
         rgbFiles: [URL], poses: [simd_double4x4], intrinsics: [simd_double4x4],
         maxDepth: Double
@@ -221,7 +236,7 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
         )
         let B = params.shape[0]
 
-        // H, Wは[0], [1]
+        // H, W are at [0], [1]
         let Hs = params[.ellipsis, 0]
         let Ws = params[.ellipsis, 1]
 
@@ -284,27 +299,26 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
             .appendingPathComponent(WORKING_DIRECTORY)
             .appendingPathComponent("demo_data")
     }
-    private func getDataDir() -> URL {
-        return getTargetDir().appendingPathComponent("B075X65R3X")
+    
+    func getDataDir() -> URL {
+        let tmpPath = NSTemporaryDirectory()
+        return URL(fileURLWithPath: tmpPath).appendingPathComponent("B075X65R3X")
     }
-
+    
     func downloadDemoData() throws {
-        let tempDir = getTargetDir()
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let infoJsonURL = getDataDir().appendingPathComponent("info.json")
-        if FileManager.default.fileExists(atPath: infoJsonURL.path) {
-            Logger.shared.debug("already downloaded")
-            return
+        let folder = getDataDir()
+        let infoURL = folder.appendingPathComponent("info.json")
+        if FileManager.default.fileExists(atPath: infoURL.path) {
+            return // Already downloaded
         }
-        let zipData = try Data(
-            contentsOf: URL(
-                string:
-                    "https://raw.githubusercontent.com/hbb1/torch-splatting/refs/heads/main/B075X65R3X.zip"
-            )!)
+        
+        let tempDir = FileManager.default.temporaryDirectory
+        let zipData = try Data(contentsOf: URL(string: "https://raw.githubusercontent.com/hbb1/torch-splatting/refs/heads/main/B075X65R3X.zip")!)
         let localZipURL = tempDir.appendingPathComponent("B075X65R3X.zip")
         try zipData.write(to: localZipURL)
         try FileManager.default.unzipItem(at: localZipURL, to: tempDir)
     }
+        
     func load(resizeFactor: Double, whiteBackground: Bool) throws -> (
         TrainData, PointCloud, TILE_SIZE_H_W
     ) {

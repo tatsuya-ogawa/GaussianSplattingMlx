@@ -83,6 +83,31 @@ class NerfStudioDataLoader {
         )
         try FileManager.default.unzipItem(at: zipUrl, to: targetDirUrl)
     }
+    
+    func getOriginalImageSize() throws -> (width: Int, height: Int) {
+        let jsonURL = getDirectoryURL().appendingPathComponent("transforms.json")
+        let frameData = try readFrameFile(jsonURL: jsonURL)
+        
+        if let w = frameData.w, let h = frameData.h {
+            return (width: w, height: h)
+        }
+        
+        // If transforms.json doesn't contain size information, get it from the first image file
+        guard let firstFrame = frameData.frames.first else {
+            throw NSError(domain: "No frames found in transforms.json", code: 1)
+        }
+        
+        let imagePath = getDirectoryURL().appendingPathComponent(firstFrame.file_path)
+        guard let image = UIImage(contentsOfFile: imagePath.path) else {
+            throw NSError(domain: "Cannot load image: \(imagePath)", code: 2)
+        }
+        
+        return (width: Int(image.size.width), height: Int(image.size.height))
+    }
+    
+    func getDirectoryURL() -> URL {
+        fatalError("Subclass must implement getDirectoryURL")
+    }
     func parsePLY(url: URL) throws -> (
         [Float], [Float], [Float], [UInt8], [UInt8], [UInt8]
     ) {
@@ -403,6 +428,10 @@ class UserNerfStudioDataLoader: NerfStudioDataLoader, DataLoaderProtocol {
         let tmpPath = NSTemporaryDirectory()
         return URL(fileURLWithPath: tmpPath)
             .appendingPathComponent(target_dir_name)
+    }
+    
+    override func getDirectoryURL() -> URL {
+        return getDataDir()
     }
     init(zipUrl: URL) {
         self.zipUrl = zipUrl

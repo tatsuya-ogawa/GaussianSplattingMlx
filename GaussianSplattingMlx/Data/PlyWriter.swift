@@ -203,7 +203,7 @@ class PlyWriter {
             for j in 0..<floatsPerVertex {
                 let pos = base + j * 4
                 let f = binData[pos..<(pos + 4)].withUnsafeBytes {
-                    $0.load(as: Float.self)
+                    $0.loadUnaligned(as: Float.self)
                 }
                 floats.append(f)
             }

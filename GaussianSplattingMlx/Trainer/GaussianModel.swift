@@ -8,7 +8,7 @@
 import Foundation
 import MLX
 
-func distTopK(_ X: MLXArray, k: Int) -> MLXArray {
+func distTopK(_ X: MLXArray, k: Int, manualClearCache: Bool = GaussianTrainer.needEagerClearCache()) -> MLXArray {
     // X1: [N, 1, 3], X2: [1, N, 3]
     let chunkSize: Int = 1 << 8
     let averageDist2 = MLXArray.zeros(like: X[.ellipsis, 0])
@@ -25,7 +25,7 @@ func distTopK(_ X: MLXArray, k: Int) -> MLXArray {
         mean = MLX.stopGradient(mean)
         eval(mean)
         averageDist2[i..<i + chunkSize] = mean
-        MLX.GPU.clearCache()
+        if manualClearCache { MLX.GPU.clearCache() }
     }
     return averageDist2
 }
@@ -87,7 +87,8 @@ class GaussModel {
     static func create_from_pcd(
         pcd: PointCloud,
         sh_degree: Int = 3,
-        debug: Bool = false
+        debug: Bool = false,
+        manualClearCache: Bool = GaussianTrainer.needEagerClearCache()
     ) -> GaussModel {
         let model = GaussModel(sh_degree: sh_degree, debug: debug)
         let points = pcd.coords
@@ -101,7 +102,10 @@ class GaussModel {
         let features = MLXArray.zeros([num_pts, 3, num_coeff])
         features[.ellipsis, 0..<3, 0] = fused_color
 
-        let dist2 = MLX.maximum(distTopK(fused_point_cloud, k: 3), 1e-7)
+        let dist2 = MLX.maximum(
+            distTopK(fused_point_cloud, k: 3, manualClearCache: manualClearCache),
+            1e-7
+        )
         var scales = MLX.log(MLX.sqrt(dist2)).reshaped([num_pts, 1])
         scales = MLX.repeated(scales, count: 3, axis: 1)
         let rots = MLXArray.zeros([num_pts, 4])
