@@ -112,7 +112,7 @@ class TrainData {
     }
 }
 protocol GaussianTrainerDelegate: AnyObject {
-    func pushLoss(loss: Float, iteration: Int?, timestamp: Date)
+    func pushLoss(loss: Float, iteration: Int?, fps: Float?, timestamp: Date)
     func pushImageData(
         render: MLXArray, truth: MLXArray, loss: Float, iteration: Int, timestamp: Date)
     func pushSnapshot(url: URL,iteration: Int, timestamp: Date)
@@ -476,10 +476,13 @@ class GaussianTrainer {
         var states = params.map {
             optimizer.newState(parameter: $0)
         }
+        var lastIterationTime = Date()
+        var fps: Float? = nil
         for iteration in 0..<iterationCount {
             if forceStop {
                 break
             }
+            let iterationStartTime = Date()
             Logger.shared.debug("\(iteration)th iteration")
             let (trainCamera, trainRGB, trainMask, trainDepth) =
                 fetchTrainData()
@@ -541,9 +544,18 @@ class GaussianTrainer {
             // Accumulate gradients for densification
             addGradientAccumulation(xyzGrad: grads[0])
             
+            // Calculate FPS
+            let iterationEndTime = Date()
+            let iterationDuration = iterationEndTime.timeIntervalSince(iterationStartTime)
+            if iterationDuration > 0 {
+                fps = Float(1.0 / iterationDuration)
+            }
+            lastIterationTime = iterationEndTime
+            
             delegate?.pushLoss(
                 loss: lossValue,
                 iteration: iteration,
+                fps: fps,
                 timestamp: Date())
             if iteration % 20 == 0 {
                 let image = loss[1]

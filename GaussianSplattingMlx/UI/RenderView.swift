@@ -63,7 +63,7 @@ class RenderViewModel: ObservableObject {
     let width: Int
     let height: Int
     
-    @Published var useMetalRenderer: Bool = false
+    @Published var useMetalRenderer: Bool = true
     private let metalRenderer: MetalGaussianRenderer?
     
     init(width: Int, height: Int) {
@@ -284,8 +284,8 @@ struct RenderView: View {
             HStack {
                 Text("Renderer:")
                 Picker("Renderer", selection: $viewModel.useMetalRenderer) {
-                    Text("MLX").tag(false)
                     Text("Metal").tag(true)
+                    Text("MLX").tag(false)
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .frame(width: 150)
@@ -294,14 +294,24 @@ struct RenderView: View {
             .padding(.horizontal)
             
             if let img = viewModel.image {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(
-                        width: CGFloat(self.width),
-                        height: CGFloat(self.height)
+                ZStack(alignment: .bottomTrailing) {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(
+                            width: CGFloat(self.width),
+                            height: CGFloat(self.height)
+                        )
+                        .cornerRadius(8)
+                    
+                    // Camera orientation gizmo
+                    CameraGizmoView(
+                        yaw: viewModel.orbitYaw,
+                        pitch: viewModel.orbitPitch
                     )
-                    .cornerRadius(8)
+                    .frame(width: 80, height: 80)
+                    .padding(16)
+                }
             } else {
                 ZStack {
                     Rectangle()
@@ -377,29 +387,204 @@ struct RenderView: View {
 struct SnapshotRenderView: View {
     @ObservedObject var asset = TrainOutputAsset.shared
     @State private var selected: TrainSnapshot?
+    @State private var renderURL: URL?
+    @State private var showShareSheet = false
+    
     var body: some View {
         VStack{
             Text("Snapshot Render")
             HStack {
-                RenderView(url: .constant(selected?.url), width: 512, height: 512)
+                RenderView(url: .constant(renderURL), width: 512, height: 512)
                     .frame(width: 512, height: 512)
                 Divider()
-                List(selection: $selected) {
-                    ForEach(asset.snapshots) { snap in
-                        HStack {
-                            Text("iter \(snap.iteration)")
-                            Spacer()
-                            Text(snap.timestamp, style: .time)
+                VStack {
+                    List(selection: $selected) {
+                        ForEach(asset.snapshots) { snap in
+                            HStack {
+                                Text("iter \(snap.iteration)")
+                                Spacer()
+                                Text(snap.timestamp, style: .time)
+                            }
+                            .contentShape(Rectangle())
+                            .tag(snap)
                         }
-                        .contentShape(Rectangle())
-                        .tag(snap)
+                    }
+                    .frame(minWidth: 250, idealWidth: 300, maxWidth: 400)
+                    
+                    if let selected = selected {
+                        HStack(spacing: 16) {
+                            Button(action: {
+                                renderURL = selected.url
+                            }) {
+                                Label("Render", systemImage: "eye.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            
+                            Button(action: {
+                                showShareSheet = true
+                            }) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding()
                     }
                 }
-                .frame(minWidth: 200, maxWidth: 300)
                 .onAppear {
                     //                asset.loadSnapshotsFromDirectory()
                 }
             }
         }
+        .sheet(isPresented: $showShareSheet) {
+            if let selected = selected {
+                ShareSheet(items: [selected.url])
+            }
+        }
+    }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// Camera orientation gizmo showing XYZ axes
+struct CameraGizmoView: View {
+    let yaw: Double
+    let pitch: Double
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            let radius = min(geometry.size.width, geometry.size.height) / 2 - 10
+            
+            ZStack {
+                // Background circle
+                Circle()
+                    .fill(Color.black.opacity(0.3))
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                    )
+                
+                // X axis (Red)
+                AxisArrow(
+                    center: center,
+                    radius: radius,
+                    yaw: yaw,
+                    pitch: pitch,
+                    axisDirection: SIMD3<Double>(1, 0, 0),
+                    color: .red,
+                    label: "X"
+                )
+                
+                // Y axis (Green)
+                AxisArrow(
+                    center: center,
+                    radius: radius,
+                    yaw: yaw,
+                    pitch: pitch,
+                    axisDirection: SIMD3<Double>(0, 1, 0),
+                    color: .green,
+                    label: "Y"
+                )
+                
+                // Z axis (Blue)
+                AxisArrow(
+                    center: center,
+                    radius: radius,
+                    yaw: yaw,
+                    pitch: pitch,
+                    axisDirection: SIMD3<Double>(0, 0, 1),
+                    color: .blue,
+                    label: "Z"
+                )
+            }
+        }
+    }
+}
+
+struct AxisArrow: View {
+    let center: CGPoint
+    let radius: Double
+    let yaw: Double
+    let pitch: Double
+    let axisDirection: SIMD3<Double>
+    let color: Color
+    let label: String
+    
+    var body: some View {
+        let projected = projectAxis(
+            axis: axisDirection,
+            yaw: yaw,
+            pitch: pitch
+        )
+        
+        let startPoint = center
+        let endPoint = CGPoint(
+            x: center.x + projected.x * radius,
+            y: center.y - projected.y * radius // Flip Y for screen coordinates
+        )
+        
+        let depth = projected.z
+        let isInFront = depth > 0
+        let opacity = isInFront ? 1.0 : 0.3
+        let lineWidth: CGFloat = isInFront ? 2 : 1
+        
+        ZStack {
+            // Arrow line
+            Path { path in
+                path.move(to: startPoint)
+                path.addLine(to: endPoint)
+            }
+            .stroke(color, lineWidth: lineWidth)
+            
+            // Arrow head
+            Circle()
+                .fill(color)
+                .frame(width: isInFront ? 8 : 5, height: isInFront ? 8 : 5)
+                .position(endPoint)
+            
+            // Label
+            Text(label)
+                .font(.system(size: 12, weight: isInFront ? .bold : .regular))
+                .foregroundColor(color)
+                .position(
+                    x: endPoint.x + (projected.x > 0 ? 12 : -12),
+                    y: endPoint.y - (projected.y > 0 ? 12 : -12)
+                )
+        }
+        .opacity(opacity)
+    }
+    
+    // Project 3D axis direction to 2D screen space
+    private func projectAxis(axis: SIMD3<Double>, yaw: Double, pitch: Double) -> SIMD3<Double> {
+        // Create rotation matrices
+        let cosYaw = cos(yaw)
+        let sinYaw = sin(yaw)
+        let cosPitch = cos(pitch)
+        let sinPitch = sin(pitch)
+        
+        // Rotate around Y axis (yaw)
+        var rotated = SIMD3<Double>(
+            axis.x * cosYaw + axis.z * sinYaw,
+            axis.y,
+            -axis.x * sinYaw + axis.z * cosYaw
+        )
+        
+        // Rotate around X axis (pitch)
+        rotated = SIMD3<Double>(
+            rotated.x,
+            rotated.y * cosPitch - rotated.z * sinPitch,
+            rotated.y * sinPitch + rotated.z * cosPitch
+        )
+        
+        return rotated
     }
 }
