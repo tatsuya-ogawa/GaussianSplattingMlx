@@ -119,24 +119,29 @@ kernel void assignGaussiansToTiles(
     device const ProjectedGaussian* gaussians [[buffer(0)]],
     device uint* tileAssignments [[buffer(1)]],
     device atomic_uint* tileCounts [[buffer(2)]],
-    constant uint2& imageSize [[buffer(3)]],
-    constant uint2& tileSize [[buffer(4)]],
-    constant uint& numGaussians [[buffer(5)]],
+    device const uint* visibilityMask [[buffer(3)]],
+    constant uint2& imageSize [[buffer(4)]],
+    constant uint2& tileSize [[buffer(5)]],
+    constant uint& numGaussians [[buffer(6)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= numGaussians) return;
+    if (visibilityMask[id] == 0) return;
     
     ProjectedGaussian gaussian = gaussians[id];
+    if (gaussian.alpha <= 0.0f) return;
     
     // Compute radius
     float det = gaussian.cov2d.x * gaussian.cov2d.z - gaussian.cov2d.y * gaussian.cov2d.y;
+    if (det <= 1e-8f) return;
     float mid = 0.5f * (gaussian.cov2d.x + gaussian.cov2d.z);
     float discriminant = max(mid * mid - det, 1e-5f);
     float radius = 3.0f * sqrt(max(mid + sqrt(discriminant), mid - sqrt(discriminant)));
+    if (radius <= 0.0f) return;
     
     // Compute tile bounds
-    int2 tileMin = int2((gaussian.mean2d - radius) / float2(tileSize));
-    int2 tileMax = int2((gaussian.mean2d + radius) / float2(tileSize));
+    int2 tileMin = int2(floor((gaussian.mean2d - radius) / float2(tileSize)));
+    int2 tileMax = int2(floor((gaussian.mean2d + radius) / float2(tileSize)));
     
     uint2 tilesPerAxis = (imageSize + tileSize - 1) / tileSize;
     
