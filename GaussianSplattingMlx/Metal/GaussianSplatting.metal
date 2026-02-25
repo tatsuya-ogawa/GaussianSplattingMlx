@@ -60,9 +60,10 @@ float3x3 buildRotationMatrix(float4 quat) {
 float3x3 buildCovariance3D(float3 scale, float4 rotation) {
     float3x3 R = buildRotationMatrix(rotation);
     float3x3 S = float3x3(0);
-    S[0][0] = exp(scale.x);
-    S[1][1] = exp(scale.y);
-    S[2][2] = exp(scale.z);
+    // `scale` is already exp()-transformed on the Swift side.
+    S[0][0] = max(scale.x, 1e-8f);
+    S[1][1] = max(scale.y, 1e-8f);
+    S[2][2] = max(scale.z, 1e-8f);
     
     float3x3 L = R * S;
     return L * transpose(L);
@@ -90,11 +91,19 @@ float3 computeColor(float3 position, float3 sh_dc, device const float3* sh_rest,
 kernel void projectGaussians(
     device const GaussianData* gaussians [[buffer(0)]],
     device ProjectedGaussian* projectedGaussians [[buffer(1)]],
-    device const CameraParams& camera [[buffer(2)]],
+    constant CameraParams& camera [[buffer(2)]],
     device uint* visibilityMask [[buffer(3)]],
+    constant uint& numGaussians [[buffer(4)]],
     uint id [[thread_position_in_grid]]
 ) {
-    if (id >= 1000000) return; // Adjust based on max gaussians
+    if (id >= numGaussians) return;
+    
+    projectedGaussians[id].mean2d = float2(0.0f);
+    projectedGaussians[id].cov2d = float3(0.0f);
+    projectedGaussians[id].color = float3(0.0f);
+    projectedGaussians[id].alpha = 0.0f;
+    projectedGaussians[id].depth = 0.0f;
+    projectedGaussians[id].originalIndex = id;
     
     GaussianData gaussian = gaussians[id];
     
@@ -110,6 +119,10 @@ kernel void projectGaussians(
     
     // Project to screen
     float4 clipPos = camera.projMatrix * viewPos;
+    if (abs(clipPos.w) < 1e-6f) {
+        visibilityMask[id] = 0;
+        return;
+    }
     float3 ndc = clipPos.xyz / clipPos.w;
     
     // Convert to pixel coordinates
@@ -170,7 +183,7 @@ kernel void projectGaussians(
         projectedGaussians[id].mean2d = screenPos;
         projectedGaussians[id].cov2d = cov2d;
         projectedGaussians[id].color = color;
-        projectedGaussians[id].alpha = clamp(1.0f / (1.0f + exp(-gaussian.opacity)), 0.0f, 0.99f);
+        projectedGaussians[id].alpha = clamp(gaussian.opacity, 0.0f, 0.99f);
         projectedGaussians[id].depth = viewPos.z;
         projectedGaussians[id].originalIndex = id;
     } else {
@@ -182,34 +195,37 @@ kernel void sortGaussiansByDepth(
     device const ProjectedGaussian* input [[buffer(0)]],
     device ProjectedGaussian* output [[buffer(1)]],
     device const uint* indices [[buffer(2)]],
+    constant uint& numGaussians [[buffer(3)]],
     uint id [[thread_position_in_grid]]
 ) {
-    if (id >= 1000000) return;
+    if (id >= numGaussians) return;
     uint index = indices[id];
     output[id] = input[index];
 }
 
 kernel void renderTiles(
     device const ProjectedGaussian* sortedGaussians [[buffer(0)]],
-    device const TileInfo* tileInfos [[buffer(1)]],
-    device float4* outputImage [[buffer(2)]],
-    constant uint2& imageSize [[buffer(3)]],
-    constant uint2& tileSize [[buffer(4)]],
-    uint2 tileCoord [[threadgroup_position_in_grid]],
-    uint2 localCoord [[thread_position_in_threadgroup]]
+    device const uint* tileAssignments [[buffer(1)]],
+    device const uint* tileCounts [[buffer(2)]],
+    device float4* outputImage [[buffer(3)]],
+    constant uint2& imageSize [[buffer(4)]],
+    constant uint2& tileSize [[buffer(5)]],
+    uint2 pixelCoord [[thread_position_in_grid]]
 ) {
-    uint2 pixelCoord = tileCoord * tileSize + localCoord;
     if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
     
+    uint2 tileCoord = pixelCoord / tileSize;
     uint tileIndex = tileCoord.y * ((imageSize.x + tileSize.x - 1) / tileSize.x) + tileCoord.x;
-    TileInfo tileInfo = tileInfos[tileIndex];
+    uint tileCount = min(tileCounts[tileIndex], 1024u);
     
     float3 accumulatedColor = float3(0.0f);
     float accumulatedAlpha = 0.0f;
     float T = 1.0f;
     
-    for (uint i = 0; i < tileInfo.gaussianCount && T > 0.001f; i++) {
-        ProjectedGaussian gaussian = sortedGaussians[tileInfo.gaussianOffset + i];
+    for (uint i = 0; i < tileCount && T > 0.001f; i++) {
+        uint gaussianIndex = tileAssignments[tileIndex * 1024 + i];
+        ProjectedGaussian gaussian = sortedGaussians[gaussianIndex];
+        if (gaussian.alpha <= 0.0f) continue;
         
         float2 delta = float2(pixelCoord) - gaussian.mean2d;
         
