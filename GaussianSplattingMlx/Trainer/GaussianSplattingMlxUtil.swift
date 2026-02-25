@@ -6,52 +6,6 @@ import MLXNN
 import MLXRandom
 import simd
 
-private let conditionToIndicesKernel = MLXFast.metalKernel(
-    name: "condition_to_indices",
-    inputNames: ["mask"],
-    outputNames: ["indices", "count"],
-    source: """
-        uint elem = thread_position_in_grid.x;
-        uint lid = thread_position_in_threadgroup.x;
-        uint n = mask_shape[0];
-
-        // Must match conditionToIndices() threadGroup.x = 256.
-        threadgroup int localIndices[256];
-        threadgroup int localCount;
-        threadgroup int blockBase;
-
-        int localValue = -1;
-        if ((elem < n) && (mask[elem] != 0)) {
-            localValue = (int)elem;
-        }
-        localIndices[lid] = localValue;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (lid == 0) {
-            int compactCount = 0;
-            for (uint i = 0; i < threads_per_threadgroup.x; ++i) {
-                int v = localIndices[i];
-                if (v >= 0) {
-                    localIndices[compactCount] = v;
-                    compactCount += 1;
-                }
-            }
-            localCount = compactCount;
-            blockBase = atomic_fetch_add_explicit(
-                &count[0], compactCount, memory_order_relaxed
-            );
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (lid < (uint)localCount) {
-            int dst = blockBase + (int)lid;
-            atomic_store_explicit(&indices[dst], localIndices[lid], memory_order_relaxed);
-        }
-        """,
-    ensureRowContiguous: false,
-    atomicOutputs: true
-)
-
 func inverse_sigmoid(x: MLXArray) -> MLXArray {
     return MLX.log(x / (1 - x))
 }
@@ -229,23 +183,6 @@ func get_rect(
 func build_color(
     means3d: MLXArray,
     shs: MLXArray,
-    cameraCenter: MLXArray,
-    activeShDegree: Int
-)
-    -> MLXArray
-{
-    let rays_d = means3d - cameraCenter
-    var color = evalSh(
-        deg: activeShDegree,
-        sh: shs.transposed(0, 2, 1),
-        dirs: rays_d
-    )
-    color = MLX.clip(color + 0.5, min: 0.0)
-    return color
-}
-func build_color(
-    means3d: MLXArray,
-    shs: MLXArray,
     camera: Camera,
     activeShDegree: Int
 )
@@ -254,12 +191,14 @@ func build_color(
     let cameraCentor = MLXArray(
         [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
             as [Float])[.newAxis, .ellipsis]
-    return build_color(
-        means3d: means3d,
-        shs: shs,
-        cameraCenter: cameraCentor,
-        activeShDegree: activeShDegree
+    let rays_d = means3d - cameraCentor
+    var color = evalSh(
+        deg: activeShDegree,
+        sh: shs.transposed(0, 2, 1),
+        dirs: rays_d
     )
+    color = MLX.clip(color + 0.5, min: 0.0)
+    return color
 }
 func matrixInverse2d(_ m: MLXArray) -> MLXArray {
     precondition(
@@ -279,26 +218,15 @@ func matrixInverse2d(_ m: MLXArray) -> MLXArray {
     return inv
 }
 func conditionToIndices(condition: MLXArray) -> MLXArray {
-    let mask = condition.reshaped([-1]).asType(.int32)
-    let n = mask.shape[0]
-    if n == 0 {
-        return MLXArray([] as [Int32])
+    Logger.shared.debug("conditionToIndices start")
+    let arange = MLX.where(condition, MLXArray(0..<condition.shape[0]), MLXArray(Int32.max))
+    let sorted = MLX.sorted(arange)
+    if sorted.shape[0] == 0 {
+        return MLXArray([])
     }
-
-    let outputs = conditionToIndicesKernel(
-        [mask],
-        grid: (n, 1, 1),
-        threadGroup: (256, 1, 1),
-        outputShapes: [[n], [1]],
-        outputDTypes: [DType.int32, DType.int32],
-        initValue: 0
-    )
-    let indices = outputs[0]
-    let count = outputs[1].item(Int.self)
-    if count == 0 {
-        return MLXArray([] as [Int32])
-    }
-    return MLX.stopGradient(indices[0..<count])
+    let index = MLX.argMax(sorted)
+    Logger.shared.debug("conditionToIndices end")
+    return MLX.stopGradient(sorted[0..<index.item(Int.self)])
 }
 func detachedArray(_ array: MLXArray) -> MLXArray {
     let data = MLX.stopGradient(array).asData(access: .copy)

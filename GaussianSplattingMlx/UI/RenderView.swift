@@ -70,9 +70,6 @@ class RenderViewModel: ObservableObject {
         self.width = width
         self.height = height
         self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
-        if self.metalRenderer == nil {
-            print("RenderViewModel: Metal renderer initialization failed. Falling back to MLX renderer.")
-        }
     }
 
     @Published var image: UIImage?
