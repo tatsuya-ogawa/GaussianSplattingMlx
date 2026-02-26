@@ -73,6 +73,8 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     // Configuration
     private let maxGaussians: Int
     private var tileSize: SIMD2<UInt32>
+    private var loadedGaussianCount: Int = 0
+    private var preparedSortCount: Int = 0
     
     var metalDevice: MTLDevice { device }
     
@@ -202,24 +204,24 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         }
     }
     
-    func render(
-        camera: Camera,
+    func clearScene() {
+        loadedGaussianCount = 0
+        preparedSortCount = 0
+        clearFrame()
+    }
+    
+    @discardableResult
+    func uploadScene(
         means3d: MLXArray,
         shs: MLXArray,
         opacity: MLXArray,
         scales: MLXArray,
-        rotations: MLXArray,
-        width: Int,
-        height: Int
-    ) {
-        
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
-        
-        // Convert MLX data to Metal format
+        rotations: MLXArray
+    ) -> Bool {
         let numGaussians = means3d.shape[0]
         guard numGaussians <= maxGaussians else {
             print("Too many gaussians: \(numGaussians) > \(maxGaussians)")
-            return
+            return false
         }
         
         prepareGaussianData(
@@ -230,6 +232,20 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
             rotations: rotations,
             numGaussians: numGaussians
         )
+        prepareIdentitySortIndices(numGaussians: numGaussians)
+        loadedGaussianCount = numGaussians
+        return true
+    }
+    
+    func render(
+        camera: Camera,
+        width: Int,
+        height: Int
+    ) {
+        let numGaussians = loadedGaussianCount
+        guard numGaussians > 0 else { return }
+        
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         
         let cameraParams = prepareCameraParams(camera: camera, width: width, height: height)
         
@@ -255,6 +271,17 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
             }
         }
         commandBuffer.commit()
+    }
+    
+    private func prepareIdentitySortIndices(numGaussians: Int) {
+        guard preparedSortCount != numGaussians,
+              let sortIndicesBuffer = sortIndicesBuffer else { return }
+        
+        let indices = sortIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: numGaussians)
+        for i in 0..<numGaussians {
+            indices[i] = UInt32(i)
+        }
+        preparedSortCount = numGaussians
     }
     
     private func logFrameStats(numGaussians: Int, width: Int, height: Int) {
@@ -436,20 +463,13 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         // For now, just copy the projected gaussians to sorted buffer
         guard let computeEncoder = commandBuffer.makeComputeCommandEncoder(),
               let projectedGaussianBuffer = projectedGaussianBuffer,
-              let sortedGaussianBuffer = sortedGaussianBuffer else { return }
+              let sortedGaussianBuffer = sortedGaussianBuffer,
+              let sortIndicesBuffer = sortIndicesBuffer else { return }
         
         computeEncoder.setComputePipelineState(sortPipeline)
         computeEncoder.setBuffer(projectedGaussianBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(sortedGaussianBuffer, offset: 0, index: 1)
-        
-        // Create identity indices for now
-        if let sortIndicesBuffer = sortIndicesBuffer {
-            let indices = sortIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: numGaussians)
-            for i in 0..<numGaussians {
-                indices[i] = UInt32(i)
-            }
-            computeEncoder.setBuffer(sortIndicesBuffer, offset: 0, index: 2)
-        }
+        computeEncoder.setBuffer(sortIndicesBuffer, offset: 0, index: 2)
         
         var numGaussiansVar = UInt32(numGaussians)
         computeEncoder.setBytes(&numGaussiansVar, length: MemoryLayout<UInt32>.stride, index: 3)

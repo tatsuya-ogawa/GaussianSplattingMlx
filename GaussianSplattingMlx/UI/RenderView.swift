@@ -14,6 +14,7 @@
 
 import MLX
 import MetalKit
+import QuartzCore
 import SwiftUI
 import simd
 
@@ -95,6 +96,8 @@ class RenderViewModel: ObservableObject {
 
     var camTarget: simd_double3 = [0, 0, 0]
     var camBaseDistance: Double = 1.0
+    private var lastRenderTime: CFTimeInterval = 0
+    private let minRenderInterval: CFTimeInterval = 1.0 / 30.0
 
     func updateCamera() {
         let x =
@@ -134,11 +137,7 @@ class RenderViewModel: ObservableObject {
         camBaseDistance = Double(diameter) * 1.5
         orbitDistance = camBaseDistance
     }
-    private var cachedMeans3d: MLXArray?
-    private var cachedShs: MLXArray?
-    private var cachedOpacity: MLXArray?
-    private var cachedScales: MLXArray?
-    private var cachedRotations: MLXArray?
+    private var hasUploadedScene = false
     func calcBoundingBox(xyzArray: MLXArray) -> ([Float], [Float]) {
         let max = xyzArray.max(axes: [0])
         let min = xyzArray.min(axes: [0])
@@ -153,40 +152,32 @@ class RenderViewModel: ObservableObject {
         let scales = gaussRender.get_scales_from(_scales)
         let rotations = gaussRender.get_rotation_from(_rotation)
         let shs = gaussRender.get_features_from(_features_dc, _features_rest)
-        
-        eval(means3d)
-        eval(opacity)
-        eval(scales)
-        eval(rotations)
-        eval(shs)
-        
-        self.cachedMeans3d = means3d
-        self.cachedOpacity = opacity
-        self.cachedScales = scales
-        self.cachedRotations = rotations
-        self.cachedShs = shs
+        hasUploadedScene = metalRenderer?.uploadScene(
+            means3d: means3d,
+            shs: shs,
+            opacity: opacity,
+            scales: scales,
+            rotations: rotations
+        ) ?? false
 
         setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
     }
-    func render() {
+    func render(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        if !force, now - lastRenderTime < minRenderInterval {
+            return
+        }
+        lastRenderTime = now
         renderWithMetal()
     }
     
     func clearRenderedFrame() {
-        metalRenderer?.clearFrame()
-        cachedMeans3d = nil
-        cachedShs = nil
-        cachedOpacity = nil
-        cachedScales = nil
-        cachedRotations = nil
+        hasUploadedScene = false
+        metalRenderer?.clearScene()
     }
     
     private func renderWithMetal() {
-        guard let means3d = cachedMeans3d,
-              let opacity = cachedOpacity,
-              let scales = cachedScales,
-              let rotations = cachedRotations,
-              let shs = cachedShs,
+        guard hasUploadedScene,
               let metalRenderer
         else {
             return
@@ -202,11 +193,6 @@ class RenderViewModel: ObservableObject {
         
         metalRenderer.render(
             camera: camera,
-            means3d: means3d,
-            shs: shs,
-            opacity: opacity,
-            scales: scales,
-            rotations: rotations,
             width: width,
             height: height
         )
@@ -340,7 +326,7 @@ struct RenderView: View {
                     do {
                         try viewModel.load(url: url)
                         viewModel.updateCamera()
-                        viewModel.render()
+                        viewModel.render(force: true)
                     } catch {
                         print(error)
                     }
