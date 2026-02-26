@@ -363,6 +363,27 @@ def inline_kernel_context(body: str, header: str) -> tuple[str, str]:
     return body_text, header_text
 
 
+def simplify_threadgroup_aliases(body: str) -> str:
+    # Slang can emit temporary aliases like:
+    #   gsX_0 = &gsX_1;
+    #   (*gsX_0)[i] = ...
+    # Normalize to direct gsX_1 access for MLX source injection.
+    assign_re = re.compile(
+        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$",
+        flags=re.MULTILINE,
+    )
+    mappings = assign_re.findall(body)
+    if not mappings:
+        return body
+
+    body_text = assign_re.sub("", body)
+    for alias, target in mappings:
+        body_text = re.sub(rf"\(\*\s*{re.escape(alias)}\s*\)", target, body_text)
+        body_text = re.sub(rf"\b{re.escape(alias)}\b", target, body_text)
+
+    return re.sub(r"\n{3,}", "\n\n", body_text).strip("\n")
+
+
 def detect_written_buffers(body: str, param_name: str) -> bool:
     n = re.escape(param_name)
     patterns = [
@@ -535,6 +556,7 @@ def main() -> None:
         body_text = strip_line_directives(body_text)
     body_text = strip_unused_kernel_context_assignments(body_text)
     body_text, header_text = inline_kernel_context(body_text, header_text)
+    body_text = simplify_threadgroup_aliases(body_text)
 
     explicit_inputs = parse_name_list(args.input_names)
     explicit_outputs = parse_name_list(args.output_names)
