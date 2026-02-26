@@ -343,6 +343,14 @@ struct SnapshotRenderView: View {
     @State private var renderURL: URL?
     @State private var showShareSheet = false
     
+    private func isRendering(_ snap: TrainSnapshot) -> Bool {
+        renderURL == snap.url
+    }
+    
+    private func isSelected(_ snap: TrainSnapshot) -> Bool {
+        selected == snap
+    }
+    
     var body: some View {
         VStack{
             Text("Snapshot Render")
@@ -351,17 +359,51 @@ struct SnapshotRenderView: View {
                     .frame(width: 512, height: 512)
                 Divider()
                 VStack {
+                    if let renderURL,
+                       let renderingSnapshot = asset.snapshots.first(where: { $0.url == renderURL }) {
+                        HStack {
+                            Label("Rendering iter \(renderingSnapshot.iteration)", systemImage: "play.circle.fill")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                    }
+                    
                     List(selection: $selected) {
                         ForEach(asset.snapshots) { snap in
                             HStack {
                                 Text("iter \(snap.iteration)")
+                                    .fontWeight(isRendering(snap) ? .semibold : .regular)
                                 Spacer()
+                                if isRendering(snap) {
+                                    Text("Rendering")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule()
+                                                .fill(Color.green.opacity(0.2))
+                                        )
+                                        .foregroundColor(.green)
+                                }
                                 Text(snap.timestamp, style: .time)
+                                    .foregroundColor(.secondary)
                             }
+                            .padding(.vertical, 4)
+                            .listRowBackground(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(
+                                        isRendering(snap)
+                                            ? Color.green.opacity(0.15)
+                                            : (isSelected(snap) ? Color.accentColor.opacity(0.12) : Color.clear)
+                                    )
+                            )
                             .contentShape(Rectangle())
                             .tag(snap)
                         }
                     }
+                    .listStyle(.plain)
                     .frame(minWidth: 250, idealWidth: 300, maxWidth: 400)
                     
                     if let selected = selected {
