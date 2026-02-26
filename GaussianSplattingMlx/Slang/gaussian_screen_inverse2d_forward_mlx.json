@@ -1,0 +1,40 @@
+{
+  "metal": "build/slang_screen_space/gaussian_screen_inverse2d_forward.metal",
+  "entry": "gaussian_screen_inverse2d_forward",
+  "kernel_name": "gaussian_screen_inverse2d_forward_slang_v1",
+  "kernel_var": "gaussian_screen_inverse2d_forwardKernel",
+  "input_names": [
+    "inverse_cov2d_1",
+    "inverse_counts_1"
+  ],
+  "output_names": [
+    "inverse_outConic_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= inverse_counts_1[int(0)])\n{\n    return;\n}\n\nuint base_0 = p_0 * 4U;\nfloat a_0 = inverse_cov2d_1[base_0];\nuint _S1 = base_0 + 1U;\nfloat b_0 = inverse_cov2d_1[_S1];\nuint _S2 = base_0 + 2U;\nfloat c_0 = inverse_cov2d_1[_S2];\nuint _S3 = base_0 + 3U;\nfloat d_0 = inverse_cov2d_1[_S3];\nfloat det_0 = a_0 * d_0 - b_0 * c_0;\n*(inverse_outConic_1+base_0) = d_0 / det_0;\n*(inverse_outConic_1+_S1) = - b_0 / det_0;\n*(inverse_outConic_1+_S2) = - c_0 / det_0;\n*(inverse_outConic_1+_S3) = a_0 / det_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "inverse_cov2d_1",
+      "buffer_index": 20,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "inverse_counts_1",
+      "buffer_index": 22,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "inverse_outConic_1",
+      "buffer_index": 23,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_screen_space/gaussian_screen_inverse2d_forward_mlx.swift"
+}
