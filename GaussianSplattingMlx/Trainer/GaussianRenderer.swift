@@ -536,32 +536,65 @@ class GaussianRenderer {
     }()
 
     private func buildScreenSpaceFallback(
+        meanNdc: MLXArray,
+        means3d: MLXArray,
+        shs: MLXArray,
+        cov3d: MLXArray,
+        cameraCenter: MLXArray,
+        viewMatrix: MLXArray,
+        fovX: MLXArray,
+        fovY: MLXArray,
+        focalX: MLXArray,
+        focalY: MLXArray,
+        imageWidth: MLXArray,
+        imageHeight: MLXArray
+    ) -> [MLXArray] {
+        let color = build_color(
+            means3d: means3d,
+            shs: shs,
+            cameraCenter: cameraCenter,
+            activeShDegree: self.active_sh_degree
+        )
+        let cov2d = build_covariance_2d(
+            mean3d: means3d,
+            cov3d: cov3d,
+            viewMatrix: viewMatrix,
+            fovX: fovX,
+            fovY: fovY,
+            focalX: focalX,
+            focalY: focalY
+        )
+        let meanCoordX = ((meanNdc[.ellipsis, 0] + 1) * imageWidth - 1.0) * 0.5
+        let meanCoordY = ((meanNdc[.ellipsis, 1] + 1) * imageHeight - 1.0) * 0.5
+        let means2d = MLX.stacked([meanCoordX, meanCoordY], axis: -1)
+        let conic = matrixInverse2d(cov2d)
+        return [means2d, cov2d, color, conic]
+    }
+
+    private func buildScreenSpaceFallback(
         camera: Camera,
         meanNdc: MLXArray,
         means3d: MLXArray,
         shs: MLXArray,
         cov3d: MLXArray
     ) -> [MLXArray] {
-        let color = build_color(
+        let cameraCenter = MLXArray(
+            [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
+                as [Float])[.newAxis, .ellipsis]
+        return buildScreenSpaceFallback(
+            meanNdc: meanNdc,
             means3d: means3d,
             shs: shs,
-            camera: camera,
-            activeShDegree: self.active_sh_degree
-        )
-        let cov2d = build_covariance_2d(
-            mean3d: means3d,
             cov3d: cov3d,
+            cameraCenter: cameraCenter,
             viewMatrix: camera.worldViewTransform,
             fovX: camera.FoVx,
             fovY: camera.FoVy,
             focalX: camera.focalX,
-            focalY: camera.focalY
+            focalY: camera.focalY,
+            imageWidth: MLXArray(Float(camera.imageWidth)),
+            imageHeight: MLXArray(Float(camera.imageHeight))
         )
-        let meanCoordX = ((meanNdc[.ellipsis, 0] + 1) * camera.imageWidth - 1.0) * 0.5
-        let meanCoordY = ((meanNdc[.ellipsis, 1] + 1) * camera.imageHeight - 1.0) * 0.5
-        let means2d = MLX.stacked([meanCoordX, meanCoordY], axis: -1)
-        let conic = matrixInverse2d(cov2d)
-        return [means2d, cov2d, color, conic]
     }
 
     init(
@@ -807,9 +840,39 @@ class GaussianRenderer {
         visiility_filter: MLXArray,
         radii: MLXArray
     ) {
+        return render(
+            imageWidth: camera.imageWidth,
+            imageHeight: camera.imageHeight,
+            means2d: means2d,
+            cov2d: cov2d,
+            color: color,
+            opacity: opacity,
+            depths: depths,
+            conic: conic,
+            inputIsDepthSorted: inputIsDepthSorted
+        )
+    }
+
+    func render(
+        imageWidth: Int,
+        imageHeight: Int,
+        means2d: MLXArray,
+        cov2d: MLXArray,
+        color: MLXArray,
+        opacity: MLXArray,
+        depths: MLXArray,
+        conic: MLXArray? = nil,
+        inputIsDepthSorted: Bool = false
+    ) -> (
+        render: MLXArray,
+        depth: MLXArray,
+        alpha: MLXArray,
+        visiility_filter: MLXArray,
+        radii: MLXArray
+    ) {
         precondition(
-            camera.imageWidth == self.W && camera.imageHeight == self.H,
-            "Renderer image size mismatch: expected (\(self.W), \(self.H)), got (\(camera.imageWidth), \(camera.imageHeight))"
+            imageWidth == self.W && imageHeight == self.H,
+            "Renderer image size mismatch: expected (\(self.W), \(self.H)), got (\(imageWidth), \(imageHeight))"
         )
         Logger.shared.debug("get_radius")
         let radii = get_radius(cov2d: cov2d)
@@ -817,8 +880,8 @@ class GaussianRenderer {
         let rect = get_rect(
             pix_coord: means2d,
             radii: radii,
-            width: camera.imageWidth,
-            height: camera.imageHeight
+            width: imageWidth,
+            height: imageHeight
         )
         let conicValues = conic ?? matrixInverse2d(cov2d)
         let packedGaussians = buildPackedGaussians(
@@ -858,6 +921,96 @@ class GaussianRenderer {
         }
 
         return (render_color, render_depth, render_alpha, radii .> 0, radii)
+    }
+
+    func forwardWithCameraParams(
+        viewMatrix: MLXArray,
+        projMatrix: MLXArray,
+        cameraCenter: MLXArray,
+        fovX: MLXArray,
+        fovY: MLXArray,
+        focalX: MLXArray,
+        focalY: MLXArray,
+        imageWidth: Int,
+        imageHeight: Int,
+        means3d: MLXArray,
+        shs: MLXArray,
+        opacity: MLXArray,
+        scales: MLXArray,
+        rotations: MLXArray
+    ) -> (
+        render: MLXArray,
+        depth: MLXArray,
+        alpha: MLXArray,
+        visiility_filter: MLXArray,
+        radii: MLXArray
+    ) {
+        Logger.shared.debug("projection_ndc")
+        var (mean_ndc, mean_view, in_mask) = projection_ndc(
+            points: means3d,
+            viewMatrix: viewMatrix,
+            projMatrix: projMatrix
+        )
+        mean_ndc = mean_ndc[in_mask]
+        mean_view = mean_view[in_mask]
+        let depthsUnsorted = mean_view[0..., 2]
+        let depthSortIndices = MLX.stopGradient(MLX.argSort(depthsUnsorted))
+        let depths = depthsUnsorted[depthSortIndices]
+        mean_ndc = mean_ndc[depthSortIndices]
+        let means3d = means3d[in_mask][depthSortIndices]
+        let shs = shs[in_mask][depthSortIndices]
+        let opacity = opacity[in_mask][depthSortIndices]
+        let scales = scales[in_mask][depthSortIndices]
+        let rotations = rotations[in_mask][depthSortIndices]
+        Logger.shared.debug("build_covariance_3d")
+        let cov3d = build_covariance_3d(s: scales, r: rotations)
+        let imageWidthArray = MLXArray(Float(imageWidth))
+        let imageHeightArray = MLXArray(Float(imageHeight))
+
+        let screenSpace: [MLXArray]
+        if let screenSpaceCustomFunction {
+            Logger.shared.debug("build_screen_space_custom")
+            screenSpace = screenSpaceCustomFunction(
+                [
+                    mean_ndc, means3d, shs, cov3d, cameraCenter, viewMatrix,
+                    fovX, fovY, focalX, focalY, imageWidthArray, imageHeightArray,
+                ]
+            )
+        } else {
+            Logger.shared.debug("build_screen_space_fallback")
+            screenSpace = buildScreenSpaceFallback(
+                meanNdc: mean_ndc,
+                means3d: means3d,
+                shs: shs,
+                cov3d: cov3d,
+                cameraCenter: cameraCenter,
+                viewMatrix: viewMatrix,
+                fovX: fovX,
+                fovY: fovY,
+                focalX: focalX,
+                focalY: focalY,
+                imageWidth: imageWidthArray,
+                imageHeight: imageHeightArray
+            )
+        }
+
+        let means2d = screenSpace[ScreenSpaceCustomOutputIndex.means2d]
+        let cov2d = screenSpace[ScreenSpaceCustomOutputIndex.cov2d]
+        let color = screenSpace[ScreenSpaceCustomOutputIndex.color]
+        let conic = screenSpace[ScreenSpaceCustomOutputIndex.conic]
+        Logger.shared.debug("render")
+        let rets = render(
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            means2d: means2d,
+            cov2d: cov2d,
+            color: color,
+            opacity: opacity,
+            depths: depths,
+            conic: conic,
+            inputIsDepthSorted: true
+        )
+        return rets
     }
 
     func forward(

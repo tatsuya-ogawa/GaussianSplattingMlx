@@ -118,6 +118,36 @@ protocol GaussianTrainerDelegate: AnyObject {
     func pushSnapshot(url: URL,iteration: Int, timestamp: Date)
 }
 class GaussianTrainer {
+    private struct CameraStateArrays {
+        let viewMatrix: MLXArray
+        let projectionMatrix: MLXArray
+        let fovX: MLXArray
+        let fovY: MLXArray
+        let focalX: MLXArray
+        let focalY: MLXArray
+        let cameraCenter: MLXArray
+    }
+
+    private enum TrainStepInputIndex {
+        static let xyz = 0
+        static let featuresDC = 1
+        static let featuresRest = 2
+        static let scales = 3
+        static let rotation = 4
+        static let opacity = 5
+        static let viewMatrix = 6
+        static let projectionMatrix = 7
+        static let fovX = 8
+        static let fovY = 9
+        static let focalX = 10
+        static let focalY = 11
+        static let cameraCenter = 12
+        static let targetRGB = 13
+        static let depthMask = 14
+        static let targetDepth = 15
+        static let parameterCount = 6
+    }
+
     var data: TrainData
     var gaussRender: GaussianRenderer
     var model: GaussModel
@@ -189,17 +219,156 @@ class GaussianTrainer {
         self.denomGradAccumulation = MLXArray.zeros([numPoints])
     }
     func fetchTrainData() -> (
-        camera: Camera, rgb: MLXArray, mask: MLXArray, depth: MLXArray?
+        camera: Camera, rgb: MLXArray, depthMask: MLXArray, depth: MLXArray
     ) {
         let numCameras = data.getNumCameras()
         let ind = Int.random(in: 0..<numCameras)
         let rgb = data.rgbArray[ind]
-        let depth = data.depthArray?[ind]
-        let mask = conditionToIndices(
-            condition: (data.alphaArray[ind] .> 0.5).reshaped([-1])
-        )
+        let depthMask = data.alphaArray[ind] .> 0.5
+        let depth = data.depthArray?[ind] ?? MLXArray.zeros(depthMask.shape)
         let camera = data.getViewPointCamera(index: ind)
-        return (camera, rgb, mask, depth)
+        return (camera, rgb, depthMask, depth)
+    }
+
+    private func cameraCenterArray(for camera: Camera) -> MLXArray {
+        return MLXArray(
+            [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
+                as [Float]
+        )[.newAxis, .ellipsis]
+    }
+
+    private func decomposeCameraState(_ camera: Camera) -> CameraStateArrays {
+        CameraStateArrays(
+            viewMatrix: camera.worldViewTransform,
+            projectionMatrix: camera.projectionMatrix,
+            fovX: camera.FoVx,
+            fovY: camera.FoVy,
+            focalX: camera.focalX,
+            focalY: camera.focalY,
+            cameraCenter: cameraCenterArray(for: camera)
+        )
+    }
+
+    private func makeTrainStepInputs(
+        params: [MLXArray],
+        camera: Camera,
+        trainRGB: MLXArray,
+        depthMask: MLXArray,
+        trainDepth: MLXArray
+    ) -> [MLXArray] {
+        let cameraState = decomposeCameraState(camera)
+        precondition(
+            params.count == TrainStepInputIndex.parameterCount,
+            "Expected \(TrainStepInputIndex.parameterCount) parameters, got \(params.count)"
+        )
+        return [
+            params[TrainStepInputIndex.xyz],
+            params[TrainStepInputIndex.featuresDC],
+            params[TrainStepInputIndex.featuresRest],
+            params[TrainStepInputIndex.scales],
+            params[TrainStepInputIndex.rotation],
+            params[TrainStepInputIndex.opacity],
+            cameraState.viewMatrix,
+            cameraState.projectionMatrix,
+            cameraState.fovX,
+            cameraState.fovY,
+            cameraState.focalX,
+            cameraState.focalY,
+            cameraState.cameraCenter,
+            trainRGB,
+            depthMask,
+            trainDepth,
+        ]
+    }
+
+    private func buildCompiledLossAndGrad(
+        gaussRender: GaussianRenderer,
+        lambdaDepth: Float,
+        lambdaDssim: Float
+    ) -> ([MLXArray]) -> ([MLXArray], [MLXArray]) {
+        // Compile only pure tensor transforms. Keep the dynamic renderer path
+        // (which uses conditionToIndices -> item) outside compile.
+        let preprocessCompiled: ([MLXArray]) -> [MLXArray] = MLX.compile(shapeless: true) { params in
+            let _xyz = params[TrainStepInputIndex.xyz]
+            let _features_dc = params[TrainStepInputIndex.featuresDC]
+            let _features_rest = params[TrainStepInputIndex.featuresRest]
+            let _scales = params[TrainStepInputIndex.scales]
+            let _rotation = params[TrainStepInputIndex.rotation]
+            let _opacity = params[TrainStepInputIndex.opacity]
+
+            let means3d = gaussRender.get_xyz_from(_xyz)
+            let opacity = gaussRender.get_opacity_from(_opacity)
+            let scales = gaussRender.get_scales_from(_scales)
+            let rotations = gaussRender.get_rotation_from(_rotation)
+            let shs = gaussRender.get_features_from(_features_dc, _features_rest)
+            return [means3d, shs, opacity, scales, rotations]
+        }
+
+        let lossFromRenderCompiled: ([MLXArray]) -> [MLXArray] = MLX.compile(shapeless: true) { inputs in
+            let render = inputs[0]
+            let depth = inputs[1]
+            let trainRGB = inputs[2]
+            let depthMask = inputs[3]
+            let trainDepth = inputs[4]
+
+            let l1LossValue = l1Loss(render, trainRGB)
+            let depthDiff = MLX.abs(depth[.ellipsis, 0] - trainDepth)
+            let depthMaskFloat = depthMask.asType(.float32)
+            let depthWeight = depthMaskFloat.sum()
+            let safeDepthWeight = MLX.maximum(depthWeight, MLXArray(1e-6 as Float))
+            let depthLossValue = (depthDiff * depthMaskFloat).sum() / safeDepthWeight
+            let ssimLossValue = 1.0 - ssim(img1: render[.newAxis], img2: trainRGB[.newAxis])
+
+            let totalLoss =
+                (1.0 - lambdaDssim) * l1LossValue
+                + lambdaDssim * ssimLossValue
+                + lambdaDepth * depthLossValue
+            return [totalLoss, render]
+        }
+
+        let lossFn: ([MLXArray]) -> [MLXArray] = { inputs in
+            let viewMatrix = inputs[TrainStepInputIndex.viewMatrix]
+            let projectionMatrix = inputs[TrainStepInputIndex.projectionMatrix]
+            let fovX = inputs[TrainStepInputIndex.fovX]
+            let fovY = inputs[TrainStepInputIndex.fovY]
+            let focalX = inputs[TrainStepInputIndex.focalX]
+            let focalY = inputs[TrainStepInputIndex.focalY]
+            let cameraCenter = inputs[TrainStepInputIndex.cameraCenter]
+            let trainRGB = inputs[TrainStepInputIndex.targetRGB]
+            let depthMask = inputs[TrainStepInputIndex.depthMask]
+            let trainDepth = inputs[TrainStepInputIndex.targetDepth]
+
+            let preprocessed = preprocessCompiled(Array(inputs.prefix(TrainStepInputIndex.parameterCount)))
+            let means3d = preprocessed[0]
+            let shs = preprocessed[1]
+            let opacity = preprocessed[2]
+            let scales = preprocessed[3]
+            let rotations = preprocessed[4]
+
+            let (render, depth, _, _, _) = gaussRender.forwardWithCameraParams(
+                viewMatrix: viewMatrix,
+                projMatrix: projectionMatrix,
+                cameraCenter: cameraCenter,
+                fovX: fovX,
+                fovY: fovY,
+                focalX: focalX,
+                focalY: focalY,
+                imageWidth: gaussRender.W,
+                imageHeight: gaussRender.H,
+                means3d: means3d,
+                shs: shs,
+                opacity: opacity,
+                scales: scales,
+                rotations: rotations
+            )
+
+            return lossFromRenderCompiled([render, depth, trainRGB, depthMask, trainDepth])
+        }
+
+        return MLX.valueAndGrad(
+            lossFn,
+            argumentNumbers: Array(0..<TrainStepInputIndex.parameterCount)
+        )
     }
     func addGradientAccumulation(xyzGrad: MLXArray) {
         // Calculate gradient magnitude (L2 norm)
@@ -461,11 +630,8 @@ class GaussianTrainer {
         forceStop = true
     }
     func startTrain(earlyStoppingThreshold: Float = 0.0001) {
-        let trainer: GaussianTrainer = self
-        let gaussRender = trainer.gaussRender
-        let model = trainer.model
-        let lambda_depth = trainer.lambda_depth
-        let lambda_dssim = trainer.lambda_dssim
+        let gaussRender = self.gaussRender
+        let model = self.model
         var params = model.getParams()
 
         let optimizer = Adam(
@@ -476,7 +642,13 @@ class GaussianTrainer {
         var states = params.map {
             optimizer.newState(parameter: $0)
         }
-        var lastIterationTime = Date()
+        let effectiveLambdaDepth = data.depthArray != nil ? lambda_depth : 0.0
+        let trainWithGrad = buildCompiledLossAndGrad(
+            gaussRender: gaussRender,
+            lambdaDepth: effectiveLambdaDepth,
+            lambdaDssim: lambda_dssim
+        )
+
         var fps: Float? = nil
         for iteration in 0..<iterationCount {
             if forceStop {
@@ -484,61 +656,16 @@ class GaussianTrainer {
             }
             let iterationStartTime = Date()
             Logger.shared.debug("\(iteration)th iteration")
-            let (trainCamera, trainRGB, trainMask, trainDepth) =
+            let (trainCamera, trainRGB, trainDepthMask, trainDepth) =
                 fetchTrainData()
-            let train: ([MLXArray]) -> [MLXArray] = { params in
-                let _xyz = params[0]
-                let _features_dc = params[1]
-                let _features_rest = params[2]
-                let _scales = params[3]
-                let _rotation = params[4]
-                let _opacity = params[5]
-                Logger.shared.debug("Prepare variables")
-                let means3d = gaussRender.get_xyz_from(_xyz)
-                let opacity = gaussRender.get_opacity_from(_opacity)
-                let scales = gaussRender.get_scales_from(_scales)
-                let rotations = gaussRender.get_rotation_from(_rotation)
-                let shs = gaussRender.get_features_from(
-                    _features_dc,
-                    _features_rest
-                )
-                Logger.shared.debug("Prepare forward")
-                let (
-                    render,
-                    depth,
-                    _,
-                    _,
-                    _
-                ) = gaussRender.forward(
-                    camera: trainCamera,
-                    means3d: means3d,
-                    shs: shs,
-                    opacity: opacity,
-                    scales: scales,
-                    rotations: rotations
-                )
-                Logger.shared.debug("Calculate loss")
-                let l1_loss = l1Loss(render, trainRGB)
-                let depth_loss =
-                    trainDepth != nil
-                    ? l1Loss(
-                        depth[.ellipsis, 0].reshaped([-1])[trainMask],
-                        trainDepth!.reshaped([-1])[trainMask]
-                    ) : MLXArray(0.0 as Float)
-                let ssim_loss =
-                    1.0 - ssim(img1: render[.newAxis], img2: trainRGB[.newAxis])
-
-                let total_loss =
-                    (1.0 - lambda_dssim) * l1_loss + lambda_dssim * ssim_loss
-                    + lambda_depth * depth_loss
-                return [total_loss, render]
-            }
-            Logger.shared.debug("valueAndGrad")
-            let (loss, grads) = MLX.valueAndGrad(
-                train,
-                argumentNumbers: Array(0..<params.count)
-            )(params)
-            eval(loss[0], grads)
+            let trainInputs = makeTrainStepInputs(
+                params: params,
+                camera: trainCamera,
+                trainRGB: trainRGB,
+                depthMask: trainDepthMask,
+                trainDepth: trainDepth
+            )
+            let (loss, grads) = trainWithGrad(trainInputs)
             let lossValue = loss[0].item(Float.self)
             
             // Accumulate gradients for densification
@@ -550,7 +677,6 @@ class GaussianTrainer {
             if iterationDuration > 0 {
                 fps = Float(1.0 / iterationDuration)
             }
-            lastIterationTime = iterationEndTime
             
             delegate?.pushLoss(
                 loss: lossValue,
@@ -583,11 +709,11 @@ class GaussianTrainer {
                     parameter: params[i],
                     state: states[i]
                 )
-                eval(newParam)
                 params[i] = newParam
                 states[i] = newState
                 Logger.shared.debug("update \(i)th param end")
             }
+            eval(params)
             eval(optimizer)
             if manualClearCache && MLX.GPU.snapshot().cacheMemory > cacheLimit {
                 clearCacheIfNeeded()
