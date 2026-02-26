@@ -335,6 +335,76 @@ class GaussianRenderer {
         return (outputs[0], outputs[1], outputs[2])
     }
 
+    private lazy var covariance3DCustomFunction: (([MLXArray]) -> [MLXArray])? = {
+        guard useScreenSpaceCustomOp else {
+            return nil
+        }
+        guard
+            let forwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_cov3d_forward_mlx"),
+            let backwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_cov3d_backward_mlx")
+        else {
+            Logger.shared.debug("Slang cov3d kernels are unavailable. Fallback path is used.")
+            return nil
+        }
+
+        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
+            let scales = inputs[0]
+            let rotations = inputs[1]
+            let activeCount = scales.shape[0]
+            let paddedCount = Swift.max(activeCount, 1)
+            let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+            let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+            let pointCounts = MLXArray([UInt32(paddedCount)])
+
+            let cov3dPadded = forwardKernel(
+                [scalesPadded, rotationsPadded, pointCounts],
+                grid: (max(paddedCount, 1), 1, 1),
+                threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                outputShapes: [[paddedCount, 3, 3]],
+                outputDTypes: [scales.dtype]
+            )[0]
+            return [Self.sliceFirstDim(cov3dPadded, count: activeCount)]
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let scales = primals[0]
+                let rotations = primals[1]
+                let cotCov3d = cotangents[0]
+
+                let activeCount = scales.shape[0]
+                let paddedCount = Swift.max(activeCount, 1)
+                let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+                let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+                let cotCov3dPadded = Self.padFirstDimToAtLeast(cotCov3d, count: paddedCount)
+                let pointCounts = MLXArray([UInt32(paddedCount)])
+
+                let grads = backwardKernel(
+                    [scalesPadded, rotationsPadded, cotCov3dPadded, pointCounts],
+                    grid: (max(paddedCount, 1), 1, 1),
+                    threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                    outputShapes: [scalesPadded.shape, rotationsPadded.shape],
+                    outputDTypes: [scales.dtype, rotations.dtype]
+                )
+
+                return [
+                    Self.sliceFirstDim(grads[0], count: activeCount),
+                    Self.sliceFirstDim(grads[1], count: activeCount),
+                ]
+            }
+        }
+    }()
+
+    private func buildCovariance3d(scales: MLXArray, rotations: MLXArray) -> MLXArray {
+        if let covariance3DCustomFunction {
+            return covariance3DCustomFunction([scales, rotations])[0]
+        }
+        return build_covariance_3d(s: scales, r: rotations)
+    }
+
     private lazy var screenSpaceCustomFunction: (([MLXArray]) -> [MLXArray])? = {
         guard useScreenSpaceCustomOp else {
             return nil
@@ -963,7 +1033,7 @@ class GaussianRenderer {
         let scales = scales[in_mask][depthSortIndices]
         let rotations = rotations[in_mask][depthSortIndices]
         Logger.shared.debug("build_covariance_3d")
-        let cov3d = build_covariance_3d(s: scales, r: rotations)
+        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
         let imageWidthArray = MLXArray(Float(imageWidth))
         let imageHeightArray = MLXArray(Float(imageHeight))
 
@@ -1045,7 +1115,7 @@ class GaussianRenderer {
         let scales = scales[in_mask][depthSortIndices]
         let rotations = rotations[in_mask][depthSortIndices]
         Logger.shared.debug("build_covariance_3d")
-        let cov3d = build_covariance_3d(s: scales, r: rotations)
+        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
         let cameraCenter = MLXArray(
             [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
                 as [Float])[.newAxis, .ellipsis]

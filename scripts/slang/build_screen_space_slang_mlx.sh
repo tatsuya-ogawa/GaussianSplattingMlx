@@ -45,6 +45,8 @@ entries=(
   gaussian_screen_color_backward
   gaussian_screen_cov2d_forward
   gaussian_screen_cov2d_backward
+  gaussian_screen_cov3d_forward
+  gaussian_screen_cov3d_backward
   gaussian_screen_inverse2d_forward
   gaussian_screen_inverse2d_backward
 )
@@ -72,6 +74,14 @@ for entry in "${entries[@]}"; do
     gaussian_screen_cov2d_backward)
       input_names="cov_means3d_1,cov_cov3d_1,cov_viewMatrix_1,cov_fovX_1,cov_fovY_1,cov_focalX_1,cov_focalY_1,cov_cotCov2d_1,cov_counts_1"
       output_names="cov_gradMeans3d_1,cov_gradCov3d_1"
+      ;;
+    gaussian_screen_cov3d_forward)
+      input_names="cov3d_scales_1,cov3d_rotations_1,cov3d_counts_1"
+      output_names="cov3d_outCov3d_1"
+      ;;
+    gaussian_screen_cov3d_backward)
+      input_names="cov3d_scales_1,cov3d_rotations_1,cov3d_cotCov3d_1,cov3d_counts_1"
+      output_names="cov3d_gradScales_1,cov3d_gradRotations_1"
       ;;
     gaussian_screen_inverse2d_forward)
       input_names="inverse_cov2d_1,inverse_counts_1"

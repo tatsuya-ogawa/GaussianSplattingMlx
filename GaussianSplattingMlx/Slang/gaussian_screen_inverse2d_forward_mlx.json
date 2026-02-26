@@ -15,19 +15,19 @@
   "buffer_parameters": [
     {
       "name": "inverse_cov2d_1",
-      "buffer_index": 20,
+      "buffer_index": 27,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "inverse_counts_1",
-      "buffer_index": 22,
+      "buffer_index": 29,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "inverse_outConic_1",
-      "buffer_index": 23,
+      "buffer_index": 30,
       "role": "output",
       "type": "float device*"
     }
