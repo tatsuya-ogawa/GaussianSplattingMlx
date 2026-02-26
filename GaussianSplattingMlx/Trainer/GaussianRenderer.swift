@@ -62,7 +62,8 @@ func getSortedValues(
     opacity: MLXArray,
     depths: MLXArray,
     conic: MLXArray? = nil,
-    in_mask: MLXArray
+    in_mask: MLXArray,
+    inputIsDepthSorted: Bool = false
 ) -> (
     depths: MLXArray,
     means2d: MLXArray,
@@ -71,18 +72,32 @@ func getSortedValues(
     opacity: MLXArray,
     color: MLXArray
 ) {
-    let sorted_depth_indices = MLX.stopGradient(MLX.argSort(depths[in_mask]))
-    let sorted_depths = depths[in_mask][sorted_depth_indices]
-    let sorted_means2d = means2d[in_mask][sorted_depth_indices]
-    let sorted_cov2d = cov2d[in_mask][sorted_depth_indices]
+    let sorted_depth_indices: MLXArray = inputIsDepthSorted
+        ? in_mask
+        : MLX.stopGradient(MLX.argSort(depths[in_mask]))
+    let sorted_depths = inputIsDepthSorted
+        ? depths[sorted_depth_indices]
+        : depths[in_mask][sorted_depth_indices]
+    let sorted_means2d = inputIsDepthSorted
+        ? means2d[sorted_depth_indices]
+        : means2d[in_mask][sorted_depth_indices]
+    let sorted_cov2d = inputIsDepthSorted
+        ? cov2d[sorted_depth_indices]
+        : cov2d[in_mask][sorted_depth_indices]
     let sorted_conic: MLXArray
     if let conic {
-        sorted_conic = conic[in_mask][sorted_depth_indices]
+        sorted_conic = inputIsDepthSorted
+            ? conic[sorted_depth_indices]
+            : conic[in_mask][sorted_depth_indices]
     } else {
         sorted_conic = matrixInverse2d(sorted_cov2d)
     }
-    let sorted_opacity = opacity[in_mask][sorted_depth_indices]
-    let sorted_color = color[in_mask][sorted_depth_indices]
+    let sorted_opacity = inputIsDepthSorted
+        ? opacity[sorted_depth_indices]
+        : opacity[in_mask][sorted_depth_indices]
+    let sorted_color = inputIsDepthSorted
+        ? color[sorted_depth_indices]
+        : color[in_mask][sorted_depth_indices]
 
     return (
         sorted_depths,
@@ -388,6 +403,7 @@ class GaussianRenderer {
         opacity: MLXArray,
         depths: MLXArray,
         conic: MLXArray? = nil,
+        inputIsDepthSorted: Bool = false,
         rect: (MLXArray, MLXArray),
         skipThreshold: Int = 0
     ) -> (MLXArray, MLXArray, MLXArray) {
@@ -427,7 +443,8 @@ class GaussianRenderer {
             opacity: opacity,
             depths: depths,
             conic: conic,
-            in_mask: in_mask
+            in_mask: in_mask,
+            inputIsDepthSorted: inputIsDepthSorted
         )
 
         Logger.shared.debug("computeGaussianWeights")
@@ -482,7 +499,8 @@ class GaussianRenderer {
         color: MLXArray,
         opacity: MLXArray,
         depths: MLXArray,
-        conic: MLXArray? = nil
+        conic: MLXArray? = nil,
+        inputIsDepthSorted: Bool = false
     ) -> (
         render: MLXArray,
         depth: MLXArray,
@@ -516,6 +534,7 @@ class GaussianRenderer {
                     opacity: opacity,
                     depths: depths,
                     conic: conic,
+                    inputIsDepthSorted: inputIsDepthSorted,
                     rect: rect
                 )
                 Logger.shared.debug("after renderTile")
@@ -561,12 +580,15 @@ class GaussianRenderer {
         )
         mean_ndc = mean_ndc[in_mask]
         mean_view = mean_view[in_mask]
-        let depths = mean_view[0..., 2]
-        let means3d = means3d[in_mask]
-        let shs = shs[in_mask]
-        let opacity = opacity[in_mask]
-        let scales = scales[in_mask]
-        let rotations = rotations[in_mask]
+        let depthsUnsorted = mean_view[0..., 2]
+        let depthSortIndices = MLX.stopGradient(MLX.argSort(depthsUnsorted))
+        let depths = depthsUnsorted[depthSortIndices]
+        mean_ndc = mean_ndc[depthSortIndices]
+        let means3d = means3d[in_mask][depthSortIndices]
+        let shs = shs[in_mask][depthSortIndices]
+        let opacity = opacity[in_mask][depthSortIndices]
+        let scales = scales[in_mask][depthSortIndices]
+        let rotations = rotations[in_mask][depthSortIndices]
         Logger.shared.debug("build_covariance_3d")
         let cov3d = build_covariance_3d(s: scales, r: rotations)
         let cameraCenter = MLXArray(
@@ -607,7 +629,8 @@ class GaussianRenderer {
             color: color,
             opacity: opacity,
             depths: depths,
-            conic: conic
+            conic: conic,
+            inputIsDepthSorted: true
         )
         return rets
     }
