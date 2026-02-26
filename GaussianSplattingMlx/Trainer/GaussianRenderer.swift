@@ -223,7 +223,7 @@ class GaussianRenderer {
                     counts,
                 ],
                 grid: (max(pixelCount, 1), 1, 1),
-                threadGroup: (128, 1, 1),
+                threadGroup: (min(128, max(pixelCount, 1)), 1, 1),
                 outputShapes: [
                     [pixelCount, 3],
                     [pixelCount, 1],
@@ -275,7 +275,7 @@ class GaussianRenderer {
                         counts,
                     ],
                     grid: (max(pixelCount, 1), 1, 1),
-                    threadGroup: (128, 1, 1),
+                    threadGroup: (min(128, max(pixelCount, 1)), 1, 1),
                     outputShapes: [
                         sortedDepths.shape,
                         sortedMeans2d.shape,
