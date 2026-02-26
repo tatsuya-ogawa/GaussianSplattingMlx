@@ -13,6 +13,8 @@
 //
 
 import MLX
+import MetalKit
+import QuartzCore
 import SwiftUI
 import simd
 
@@ -63,16 +65,27 @@ class RenderViewModel: ObservableObject {
     let width: Int
     let height: Int
     
-    @Published var useMetalRenderer: Bool = true
     private let metalRenderer: MetalGaussianRenderer?
+    
+    private lazy var gaussRender = GaussianRenderer(
+        active_sh_degree: 4,
+        W: width,
+        H: height,
+        TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
+        whiteBackground: false
+    )
+    
+    var activeRenderer: MetalGaussianRenderer? { metalRenderer }
     
     init(width: Int, height: Int) {
         self.width = width
         self.height = height
         self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
+        if self.metalRenderer == nil {
+            print("RenderViewModel: Metal renderer initialization failed.")
+        }
     }
-
-    @Published var image: UIImage?
+    
     private var cameraMatrix: simd_double4x4 = simd_double4x4(1)
     private var focalX: Double = 1
     private var focalY: Double = 1
@@ -83,6 +96,8 @@ class RenderViewModel: ObservableObject {
 
     var camTarget: simd_double3 = [0, 0, 0]
     var camBaseDistance: Double = 1.0
+    private var lastRenderTime: CFTimeInterval = 0
+    private let minRenderInterval: CFTimeInterval = 1.0 / 30.0
 
     func updateCamera() {
         let x =
@@ -122,12 +137,7 @@ class RenderViewModel: ObservableObject {
         camBaseDistance = Double(diameter) * 1.5
         orbitDistance = camBaseDistance
     }
-    var xyzArray: MLXArray?
-    var features_dcArray: MLXArray?
-    var features_restArray: MLXArray?
-    var opacityArray: MLXArray?
-    var scalesArray: MLXArray?
-    var rotationArray: MLXArray?
+    private var hasUploadedScene = false
     func calcBoundingBox(xyzArray: MLXArray) -> ([Float], [Float]) {
         let max = xyzArray.max(axes: [0])
         let min = xyzArray.min(axes: [0])
@@ -136,105 +146,43 @@ class RenderViewModel: ObservableObject {
     func load(url: URL) throws {
         let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) =
             try PlyWriter.loadGaussianBinaryPLYAsMLX(from: url)
-        self.xyzArray = _xyz
-        self.features_dcArray = _features_dc
-        self.features_restArray = _features_rest
-        self.opacityArray = _opacity
-        self.scalesArray = _scales
-        self.rotationArray = _rotation
-
-        setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
-    }
-    func render() {
-        guard let xyzArray, let opacityArray, let scalesArray,
-            let rotationArray, let features_dcArray, let features_restArray
-        else {
-            return
-        }
         
-        if useMetalRenderer && metalRenderer != nil {
-            renderWithMetal()
-        } else {
-            renderWithMLX()
-        }
-    }
-    
-    private func renderWithMLX() {
-        guard let xyzArray, let opacityArray, let scalesArray,
-            let rotationArray, let features_dcArray, let features_restArray
-        else {
-            return
-        }
-        
-        let gaussRender = GaussianRenderer(
-            active_sh_degree: 4,
-            W: width,
-            H: height,
-            TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
-            whiteBackground: false
-        )
-        let means3d = gaussRender.get_xyz_from(xyzArray)
-        let opacity = gaussRender.get_opacity_from(opacityArray)
-        let scales = gaussRender.get_scales_from(scalesArray)
-        let rotations = gaussRender.get_rotation_from(rotationArray)
-        let shs = gaussRender.get_features_from(
-            features_dcArray,
-            features_restArray
-        )
-        let camera = Camera(
-            width: width,
-            height: height,
-            focalX: Float(focalX),
-            focalY: Float(focalY),
-            c2w: cameraMatrix
-        )
-        let (
-            render,
-            _,
-            _,
-            _,
-            _
-        ) = gaussRender.forward(
-            camera: camera,
+        let means3d = gaussRender.get_xyz_from(_xyz)
+        let opacity = gaussRender.get_opacity_from(_opacity)
+        let scales = gaussRender.get_scales_from(_scales)
+        let rotations = gaussRender.get_rotation_from(_rotation)
+        let shs = gaussRender.get_features_from(_features_dc, _features_rest)
+        hasUploadedScene = metalRenderer?.uploadScene(
             means3d: means3d,
             shs: shs,
             opacity: opacity,
             scales: scales,
             rotations: rotations
-        )
-        let image = MLX.stopGradient(render)
-        eval(image)
-        DispatchQueue.main.async {
-            self.image = image.toRGBToUIImage()
+        ) ?? false
+
+        setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
+    }
+    func render(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        if !force, now - lastRenderTime < minRenderInterval {
+            return
         }
-        MLX.GPU.clearCache()
+        lastRenderTime = now
+        renderWithMetal()
+    }
+    
+    func clearRenderedFrame() {
+        hasUploadedScene = false
+        metalRenderer?.clearScene()
     }
     
     private func renderWithMetal() {
-        guard let metalRenderer = metalRenderer,
-              let xyzArray, let opacityArray, let scalesArray,
-              let rotationArray, let features_dcArray, let features_restArray
+        guard hasUploadedScene,
+              let metalRenderer
         else {
             return
         }
-        
-        let gaussRender = GaussianRenderer(
-            active_sh_degree: 4,
-            W: width,
-            H: height,
-            TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
-            whiteBackground: false
-        )
-        
-        let means3d = gaussRender.get_xyz_from(xyzArray)
-        let opacity = gaussRender.get_opacity_from(opacityArray)
-        let scales = gaussRender.get_scales_from(scalesArray)
-        let rotations = gaussRender.get_rotation_from(rotationArray)
-        let shs = gaussRender.get_features_from(
-            features_dcArray,
-            features_restArray
-        )
-        
+
         let camera = Camera(
             width: width,
             height: height,
@@ -243,22 +191,47 @@ class RenderViewModel: ObservableObject {
             c2w: cameraMatrix
         )
         
-        if let texture = metalRenderer.render(
+        metalRenderer.render(
             camera: camera,
-            means3d: means3d,
-            shs: shs,
-            opacity: opacity,
-            scales: scales,
-            rotations: rotations,
             width: width,
             height: height
-        ) {
-            DispatchQueue.main.async {
-                self.image = metalRenderer.textureToUIImage(texture)
-            }
-        }
+        )
     }
 }
+
+private struct MetalTextureView: UIViewRepresentable {
+    let renderer: MetalGaussianRenderer
+    let drawableSize: CGSize
+    
+    final class Coordinator {
+        let renderer: MetalGaussianRenderer
+        
+        init(renderer: MetalGaussianRenderer) {
+            self.renderer = renderer
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(renderer: renderer)
+    }
+    
+    func makeUIView(context: Context) -> MTKView {
+        let view = MTKView(frame: .zero, device: renderer.metalDevice)
+        context.coordinator.renderer.attach(to: view)
+        view.drawableSize = drawableSize
+        return view
+    }
+    
+    func updateUIView(_ uiView: MTKView, context: Context) {
+        context.coordinator.renderer.attach(to: uiView)
+        uiView.drawableSize = drawableSize
+    }
+    
+    static func dismantleUIView(_ uiView: MTKView, coordinator: Coordinator) {
+        coordinator.renderer.detach()
+    }
+}
+
 struct RenderView: View {
     let width: Int
     let height: Int
@@ -281,23 +254,12 @@ struct RenderView: View {
     }
     var body: some View {
         VStack {
-            HStack {
-                Text("Renderer:")
-                Picker("Renderer", selection: $viewModel.useMetalRenderer) {
-                    Text("Metal").tag(true)
-                    Text("MLX").tag(false)
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .frame(width: 150)
-                Spacer()
-            }
-            .padding(.horizontal)
-            
-            if let img = viewModel.image {
+            if let renderer = viewModel.activeRenderer {
                 ZStack(alignment: .bottomTrailing) {
-                    Image(uiImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
+                    MetalTextureView(
+                        renderer: renderer,
+                        drawableSize: CGSize(width: self.width, height: self.height)
+                    )
                         .frame(
                             width: CGFloat(self.width),
                             height: CGFloat(self.height)
@@ -364,22 +326,13 @@ struct RenderView: View {
                     do {
                         try viewModel.load(url: url)
                         viewModel.updateCamera()
-                        viewModel.render()
+                        viewModel.render(force: true)
                     } catch {
                         print(error)
                     }
                 }
             } else {
-                DispatchQueue.main.async {
-                    viewModel.image = nil
-                }
-            }
-        }
-        .onChange(of: viewModel.useMetalRenderer) { _ in
-            if url != nil && viewModel.xyzArray != nil {
-                renderQueue.async {
-                    viewModel.render()
-                }
+                viewModel.clearRenderedFrame()
             }
         }
     }
@@ -390,6 +343,14 @@ struct SnapshotRenderView: View {
     @State private var renderURL: URL?
     @State private var showShareSheet = false
     
+    private func isRendering(_ snap: TrainSnapshot) -> Bool {
+        renderURL == snap.url
+    }
+    
+    private func isSelected(_ snap: TrainSnapshot) -> Bool {
+        selected == snap
+    }
+    
     var body: some View {
         VStack{
             Text("Snapshot Render")
@@ -398,17 +359,51 @@ struct SnapshotRenderView: View {
                     .frame(width: 512, height: 512)
                 Divider()
                 VStack {
+                    if let renderURL,
+                       let renderingSnapshot = asset.snapshots.first(where: { $0.url == renderURL }) {
+                        HStack {
+                            Label("Rendering iter \(renderingSnapshot.iteration)", systemImage: "play.circle.fill")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                    }
+                    
                     List(selection: $selected) {
                         ForEach(asset.snapshots) { snap in
                             HStack {
                                 Text("iter \(snap.iteration)")
+                                    .fontWeight(isRendering(snap) ? .semibold : .regular)
                                 Spacer()
+                                if isRendering(snap) {
+                                    Text("Rendering")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule()
+                                                .fill(Color.green.opacity(0.2))
+                                        )
+                                        .foregroundColor(.green)
+                                }
                                 Text(snap.timestamp, style: .time)
+                                    .foregroundColor(.secondary)
                             }
+                            .padding(.vertical, 4)
+                            .listRowBackground(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(
+                                        isRendering(snap)
+                                            ? Color.green.opacity(0.15)
+                                            : (isSelected(snap) ? Color.accentColor.opacity(0.12) : Color.clear)
+                                    )
+                            )
                             .contentShape(Rectangle())
                             .tag(snap)
                         }
                     }
+                    .listStyle(.plain)
                     .frame(minWidth: 250, idealWidth: 300, maxWidth: 400)
                     
                     if let selected = selected {
