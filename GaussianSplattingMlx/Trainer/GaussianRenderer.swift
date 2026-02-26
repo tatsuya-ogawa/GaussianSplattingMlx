@@ -1,4 +1,5 @@
 import MLX
+import MLXFast
 import simd
 
 private func arange(_ count: Int) -> [Int32] {
@@ -120,7 +121,253 @@ class GaussianRenderer {
         static let conic = 3
     }
 
+    // MLX custom kernels switch signature generation at size <= 8 (constant vs device).
+    // Keep custom kernel execution on a stable signature path to avoid cache invalidation churn.
+    private static let fusedTileCustomMinGaussianCount = 9
     private static let screenSpaceCustomMinPointCount = 3
+
+    private static let fusedTileCompositeKernel = MLXFast.metalKernel(
+        name: "gaussian_tile_forward_slang_v2",
+        inputNames: [
+            "tileCoord", "sortedDepths", "sortedMeans2d", "sortedConic",
+            "sortedOpacity", "sortedColor", "counts",
+        ],
+        outputNames: ["outColor", "outDepth", "outAlpha"],
+        source: #"""
+            uint p = thread_position_in_grid.x;
+            int pixelCount = int(counts[0]);
+            if (int(p) >= pixelCount) {
+                return;
+            }
+            int gaussianCount = int(counts[1]);
+            bool whiteBg = counts[2] != 0;
+
+            float px = tileCoord[p * 2 + 0];
+            float py = tileCoord[p * 2 + 1];
+
+            float T = 1.0f;
+            float accAlpha = 0.0f;
+            float accumColorX = 0.0f;
+            float accumColorY = 0.0f;
+            float accumColorZ = 0.0f;
+            float accumDepth = 0.0f;
+
+            for (int i = 0; i < gaussianCount; ++i) {
+                float dx = px - sortedMeans2d[i * 2 + 0];
+                float dy = py - sortedMeans2d[i * 2 + 1];
+                uint conicBase = uint(i) * 4;
+                float exponent = -0.5f * (
+                    dx * dx * sortedConic[conicBase + 0] +
+                    dy * dy * sortedConic[conicBase + 3] +
+                    dx * dy * sortedConic[conicBase + 1] +
+                    dx * dy * sortedConic[conicBase + 2]
+                );
+                float alpha = exp(exponent) * sortedOpacity[i];
+                if (alpha > 0.99f) {
+                    alpha = 0.99f;
+                }
+
+                float contrib = T * alpha;
+                accAlpha += contrib;
+                uint colorBase = uint(i) * 3;
+                accumColorX += contrib * sortedColor[colorBase + 0];
+                accumColorY += contrib * sortedColor[colorBase + 1];
+                accumColorZ += contrib * sortedColor[colorBase + 2];
+                accumDepth += contrib * sortedDepths[i];
+                T *= (1.0f - alpha);
+
+                if (T < 1e-4f) {
+                    break;
+                }
+            }
+
+            float bg = whiteBg ? (1.0f - accAlpha) : 0.0f;
+            outColor[p * 3 + 0] = accumColorX + bg;
+            outColor[p * 3 + 1] = accumColorY + bg;
+            outColor[p * 3 + 2] = accumColorZ + bg;
+            outDepth[p] = accumDepth;
+            outAlpha[p] = accAlpha;
+        """#
+    )
+
+    private static let fusedTileCompositeBackwardKernel = MLXFast.metalKernel(
+        name: "gaussian_tile_backward_slang_v2",
+        inputNames: [
+            "tileCoord", "sortedDepths", "sortedMeans2d", "sortedConic",
+            "sortedOpacity", "sortedColor", "cotColor", "cotDepth", "cotAlpha",
+            "counts",
+        ],
+        outputNames: [
+            "gradSortedDepths", "gradSortedMeans2d", "gradSortedConic",
+            "gradSortedOpacity", "gradSortedColor",
+        ],
+        source: #"""
+            uint p = thread_position_in_grid.x;
+            int pixelCount = int(counts[0]);
+            if (int(p) >= pixelCount) {
+                return;
+            }
+            int gaussianCount = int(counts[1]);
+            bool whiteBg = counts[2] != 0;
+
+            float px = float(tileCoord[p * 2 + 0]);
+            float py = float(tileCoord[p * 2 + 1]);
+
+            float gColorX = cotColor[p * 3 + 0];
+            float gColorY = cotColor[p * 3 + 1];
+            float gColorZ = cotColor[p * 3 + 2];
+            float gDepth = cotDepth[p];
+            float gAlpha = cotAlpha[p];
+            float bgCoeff = whiteBg ? -(gColorX + gColorY + gColorZ) : 0.0f;
+
+            float weightedSum = 0.0f;
+            float trans = 1.0f;
+
+            for (int i = 0; i < gaussianCount; ++i) {
+                float dx = px - sortedMeans2d[i * 2 + 0];
+                float dy = py - sortedMeans2d[i * 2 + 1];
+                uint conicBase = uint(i) * 4;
+                float exponent = -0.5f * (
+                    dx * dx * sortedConic[conicBase + 0] +
+                    dy * dy * sortedConic[conicBase + 3] +
+                    dx * dy * sortedConic[conicBase + 1] +
+                    dx * dy * sortedConic[conicBase + 2]
+                );
+                float raw = exp(exponent) * sortedOpacity[i];
+                float alpha = raw;
+                if (alpha > 0.99f) {
+                    alpha = 0.99f;
+                }
+
+                float contrib = trans * alpha;
+                uint colorBase = uint(i) * 3;
+                float c = (
+                    gColorX * sortedColor[colorBase + 0] +
+                    gColorY * sortedColor[colorBase + 1] +
+                    gColorZ * sortedColor[colorBase + 2]
+                ) + gDepth * sortedDepths[i] + gAlpha + bgCoeff;
+                weightedSum += c * contrib;
+
+                trans *= (1.0f - alpha);
+                if (trans < 1e-4f) {
+                    break;
+                }
+            }
+
+            trans = 1.0f;
+            float prefixWeighted = 0.0f;
+            for (int i = 0; i < gaussianCount; ++i) {
+                float dx = px - sortedMeans2d[i * 2 + 0];
+                float dy = py - sortedMeans2d[i * 2 + 1];
+                uint conicBase = uint(i) * 4;
+                float c00 = sortedConic[conicBase + 0];
+                float c01 = sortedConic[conicBase + 1];
+                float c10 = sortedConic[conicBase + 2];
+                float c11 = sortedConic[conicBase + 3];
+                float exponent = -0.5f * (
+                    dx * dx * c00 +
+                    dy * dy * c11 +
+                    dx * dy * c01 +
+                    dx * dy * c10
+                );
+                float expVal = exp(exponent);
+                float raw = expVal * sortedOpacity[i];
+                float alpha = raw;
+                if (alpha > 0.99f) {
+                    alpha = 0.99f;
+                }
+                float contrib = trans * alpha;
+                uint colorBase = uint(i) * 3;
+                float c = (
+                    gColorX * sortedColor[colorBase + 0] +
+                    gColorY * sortedColor[colorBase + 1] +
+                    gColorZ * sortedColor[colorBase + 2]
+                ) + gDepth * sortedDepths[i] + gAlpha + bgCoeff;
+
+                float suffixWeighted = weightedSum - (prefixWeighted + c * contrib);
+                float denom = 1.0f - alpha;
+                if (denom < 1e-6f) {
+                    denom = 1e-6f;
+                }
+                float gradAlpha = c * trans - suffixWeighted / denom;
+
+                atomic_fetch_add_explicit(
+                    (device atomic_float*)(gradSortedDepths + i),
+                    gDepth * contrib,
+                    memory_order_relaxed
+                );
+                atomic_fetch_add_explicit(
+                    (device atomic_float*)(gradSortedColor + colorBase + 0),
+                    gColorX * contrib,
+                    memory_order_relaxed
+                );
+                atomic_fetch_add_explicit(
+                    (device atomic_float*)(gradSortedColor + colorBase + 1),
+                    gColorY * contrib,
+                    memory_order_relaxed
+                );
+                atomic_fetch_add_explicit(
+                    (device atomic_float*)(gradSortedColor + colorBase + 2),
+                    gColorZ * contrib,
+                    memory_order_relaxed
+                );
+
+                if (raw <= 0.99f) {
+                    float gradRaw = gradAlpha;
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedOpacity + i),
+                        gradRaw * expVal,
+                        memory_order_relaxed
+                    );
+
+                    float gradExponent = gradRaw * raw;
+                    float dxdy = dx * dy;
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedConic + conicBase + 0),
+                        gradExponent * (-0.5f * dx * dx),
+                        memory_order_relaxed
+                    );
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedConic + conicBase + 1),
+                        gradExponent * (-0.5f * dxdy),
+                        memory_order_relaxed
+                    );
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedConic + conicBase + 2),
+                        gradExponent * (-0.5f * dxdy),
+                        memory_order_relaxed
+                    );
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedConic + conicBase + 3),
+                        gradExponent * (-0.5f * dy * dy),
+                        memory_order_relaxed
+                    );
+
+                    float c01sum = c01 + c10;
+                    float gradDx = gradExponent * (-dx * c00 - 0.5f * dy * c01sum);
+                    float gradDy = gradExponent * (-dy * c11 - 0.5f * dx * c01sum);
+
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedMeans2d + i * 2 + 0),
+                        -gradDx,
+                        memory_order_relaxed
+                    );
+                    atomic_fetch_add_explicit(
+                        (device atomic_float*)(gradSortedMeans2d + i * 2 + 1),
+                        -gradDy,
+                        memory_order_relaxed
+                    );
+                }
+
+                prefixWeighted += c * contrib;
+                trans *= (1.0f - alpha);
+                if (trans < 1e-4f) {
+                    break;
+                }
+            }
+        """#,
+        atomicOutputs: true
+    )
 
     let debug: Bool
     let active_sh_degree: Int
@@ -129,6 +376,7 @@ class GaussianRenderer {
     let pix_coord: MLXArray
     let whiteBackground: Bool
     let TILE_SIZE: TILE_SIZE_H_W
+    let useFusedTileCustomOp: Bool
     let useScreenSpaceCustomOp: Bool
 
     private static func padFirstDimToAtLeast(_ value: MLXArray, count: Int) -> MLXArray {
@@ -144,6 +392,160 @@ class GaussianRenderer {
     private static func sliceFirstDim(_ value: MLXArray, count: Int) -> MLXArray {
         guard count < value.shape[0] else { return value }
         return value[0..<count]
+    }
+
+    private func renderTileCompositeFusedForward(
+        tileCoord: MLXArray,
+        sortedDepths: MLXArray,
+        sortedMeans2d: MLXArray,
+        sortedConic: MLXArray,
+        sortedOpacity: MLXArray,
+        sortedColor: MLXArray,
+        activeGaussianCount: Int
+    ) -> [MLXArray] {
+        let pixelCount = tileCoord.shape[0]
+        let sortedConicFlat = sortedConic.reshaped([-1, 4])
+        let counts = MLXArray(
+            [
+                UInt32(pixelCount),
+                UInt32(activeGaussianCount),
+                UInt32(whiteBackground ? 1 : 0),
+            ]
+        )
+        return Self.fusedTileCompositeKernel(
+            [
+                tileCoord,
+                sortedDepths,
+                sortedMeans2d,
+                sortedConicFlat,
+                sortedOpacity,
+                sortedColor,
+                counts,
+            ],
+            grid: (max(pixelCount, 1), 1, 1),
+            threadGroup: (min(128, max(pixelCount, 1)), 1, 1),
+            outputShapes: [
+                [pixelCount, 3],
+                [pixelCount, 1],
+                [pixelCount, 1],
+            ],
+            outputDTypes: [
+                sortedColor.dtype,
+                sortedDepths.dtype,
+                sortedOpacity.dtype,
+            ]
+        )
+    }
+
+    private lazy var fusedTileCompositeCustomFunction: ([MLXArray]) -> [MLXArray] = {
+        let whiteBackground = self.whiteBackground
+        let backwardKernel = Self.fusedTileCompositeBackwardKernel
+
+        let forward: ([MLXArray]) -> [MLXArray] = { [unowned self] inputs in
+            self.renderTileCompositeFusedForward(
+                tileCoord: inputs[0],
+                sortedDepths: inputs[1],
+                sortedMeans2d: inputs[2],
+                sortedConic: inputs[3],
+                sortedOpacity: inputs[4],
+                sortedColor: inputs[5],
+                activeGaussianCount: inputs[6].item(Int.self)
+            )
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let tileCoord = primals[0]
+                let sortedDepths = primals[1]
+                let sortedMeans2d = primals[2]
+                let sortedConic = primals[3]
+                let sortedOpacity = primals[4]
+                let sortedColor = primals[5]
+                let activeGaussianCount = primals[6].item(Int.self)
+                let cotColor = cotangents[0]
+                let cotDepth = cotangents[1]
+                let cotAlpha = cotangents[2]
+
+                let pixelCount = tileCoord.shape[0]
+                let sortedConicFlat = sortedConic.reshaped([-1, 4])
+                let counts = MLXArray(
+                    [
+                        UInt32(pixelCount),
+                        UInt32(activeGaussianCount),
+                        UInt32(whiteBackground ? 1 : 0),
+                    ]
+                )
+
+                let kernelGrads = backwardKernel(
+                    [
+                        tileCoord,
+                        sortedDepths,
+                        sortedMeans2d,
+                        sortedConicFlat,
+                        sortedOpacity,
+                        sortedColor,
+                        cotColor,
+                        cotDepth,
+                        cotAlpha,
+                        counts,
+                    ],
+                    grid: (max(pixelCount, 1), 1, 1),
+                    threadGroup: (min(128, max(pixelCount, 1)), 1, 1),
+                    outputShapes: [
+                        sortedDepths.shape,
+                        sortedMeans2d.shape,
+                        sortedConicFlat.shape,
+                        sortedOpacity.shape,
+                        sortedColor.shape,
+                    ],
+                    outputDTypes: [
+                        sortedDepths.dtype,
+                        sortedMeans2d.dtype,
+                        sortedConicFlat.dtype,
+                        sortedOpacity.dtype,
+                        sortedColor.dtype,
+                    ],
+                    initValue: 0.0
+                )
+
+                let gradTileCoord = MLXArray.zeros(tileCoord.shape, dtype: tileCoord.dtype)
+                let gradSortedConic = kernelGrads[2].reshaped(sortedConic.shape)
+                let gradActiveGaussianCount = MLXArray(0.0)
+                return [
+                    gradTileCoord,
+                    kernelGrads[0],
+                    kernelGrads[1],
+                    gradSortedConic,
+                    kernelGrads[3],
+                    kernelGrads[4],
+                    gradActiveGaussianCount,
+                ]
+            }
+        }
+    }()
+
+    private func renderTileCompositeCustomOp(
+        tileCoord: MLXArray,
+        sortedDepths: MLXArray,
+        sortedMeans2d: MLXArray,
+        sortedConic: MLXArray,
+        sortedOpacity: MLXArray,
+        sortedColor: MLXArray,
+        activeGaussianCount: Int
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let outputs = fusedTileCompositeCustomFunction(
+            [
+                tileCoord,
+                sortedDepths,
+                sortedMeans2d,
+                sortedConic,
+                sortedOpacity,
+                sortedColor,
+                MLXArray(Float(activeGaussianCount)),
+            ]
+        )
+        return (outputs[0], outputs[1], outputs[2])
     }
 
     private lazy var screenSpaceCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -381,16 +783,21 @@ class GaussianRenderer {
         H: Int,
         TILE_SIZE: TILE_SIZE_H_W,
         whiteBackground: Bool,
+        useFusedTileCustomOp: Bool = true,
         useScreenSpaceCustomOp: Bool = true
     ) {
         self.active_sh_degree = active_sh_degree
         self.debug = false
         self.whiteBackground = whiteBackground
+        self.useFusedTileCustomOp = useFusedTileCustomOp
         self.useScreenSpaceCustomOp = useScreenSpaceCustomOp
         self.TILE_SIZE = TILE_SIZE
         self.W = W
         self.H = H
         self.pix_coord = createMeshGrid(shape: [H, W])
+        if useFusedTileCustomOp {
+            _ = fusedTileCompositeCustomFunction
+        }
     }
 
     func renderTile(
@@ -447,44 +854,84 @@ class GaussianRenderer {
             inputIsDepthSorted: inputIsDepthSorted
         )
 
-        Logger.shared.debug("computeGaussianWeights")
-        let gauss_weight = computeGaussianWeights(
-            tile_coord: tile_coord,
-            sorted_means2d: sortedValues.means2d,
-            sorted_conic: sortedValues.conic
-        )
-        Logger.shared.debug("renderTile alpha")
-        let alpha =
-            gauss_weight[.ellipsis, .newAxis]
-            * MLX.clip(
-                sortedValues.opacity[.newAxis],
-                max: 0.99
+        let tile_color: MLXArray
+        let tile_depth: MLXArray
+        let acc_alpha: MLXArray
+        if useFusedTileCustomOp {
+            let activeGaussianCount = sortedValues.depths.shape[0]
+            let sortedDepthsPadded = Self.padFirstDimToAtLeast(
+                sortedValues.depths,
+                count: Self.fusedTileCustomMinGaussianCount
             )
-        Logger.shared.debug("renderTile T")
-        let beforeT = MLX.concatenated(
-            [
-                MLX.ones(like: alpha[0..., .stride(to: 1)]),
-                1 - alpha[0..., .stride(to: -1)],
-            ],
-            axis: 1
-        )
-        let T = beforeT.cumprod(axis: 1)
-
-        Logger.shared.debug("renderTile acc_alpha")
-        let acc_alpha = (alpha * T).sum(axis: 1)
-
-        Logger.shared.debug("renderTile tile_color")
-        let tile_color =
-            (T * alpha * sortedValues.color[.newAxis]).sum(
-                axis: 1
-            ) + (1 - acc_alpha) * (self.whiteBackground ? 1 : 0)
-
-        Logger.shared.debug("renderTile tile_depth")
-        let tile_depth =
-            ((T * alpha)
-            * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+            let sortedMeans2dPadded = Self.padFirstDimToAtLeast(
+                sortedValues.means2d,
+                count: Self.fusedTileCustomMinGaussianCount
+            )
+            let sortedConicPadded = Self.padFirstDimToAtLeast(
+                sortedValues.conic,
+                count: Self.fusedTileCustomMinGaussianCount
+            )
+            let sortedOpacityPadded = Self.padFirstDimToAtLeast(
+                sortedValues.opacity,
+                count: Self.fusedTileCustomMinGaussianCount
+            )
+            let sortedColorPadded = Self.padFirstDimToAtLeast(
+                sortedValues.color,
+                count: Self.fusedTileCustomMinGaussianCount
+            )
+            let blended = renderTileCompositeCustomOp(
+                tileCoord: tile_coord.asType(.float32),
+                sortedDepths: sortedDepthsPadded,
+                sortedMeans2d: sortedMeans2dPadded,
+                sortedConic: sortedConicPadded,
+                sortedOpacity: sortedOpacityPadded,
+                sortedColor: sortedColorPadded,
+                activeGaussianCount: activeGaussianCount
+            )
+            tile_color = blended.0
+            tile_depth = blended.1
+            acc_alpha = blended.2
+        } else {
+            Logger.shared.debug("computeGaussianWeights")
+            let gauss_weight = computeGaussianWeights(
+                tile_coord: tile_coord,
+                sorted_means2d: sortedValues.means2d,
+                sorted_conic: sortedValues.conic
+            )
+            Logger.shared.debug("renderTile alpha")
+            let alpha =
+                gauss_weight[.ellipsis, .newAxis]
+                * MLX.clip(
+                    sortedValues.opacity[.newAxis],
+                    max: 0.99
+                )
+            Logger.shared.debug("renderTile T")
+            let beforeT = MLX.concatenated(
+                [
+                    MLX.ones(like: alpha[0..., .stride(to: 1)]),
+                    1 - alpha[0..., .stride(to: -1)],
+                ],
                 axis: 1
             )
+            let T = beforeT.cumprod(axis: 1)
+
+            Logger.shared.debug("renderTile acc_alpha")
+            let acc_alphaFallback = (alpha * T).sum(axis: 1)
+
+            Logger.shared.debug("renderTile tile_color")
+            tile_color =
+                (T * alpha * sortedValues.color[.newAxis]).sum(
+                    axis: 1
+                ) + (1 - acc_alphaFallback) * (self.whiteBackground ? 1 : 0)
+
+            Logger.shared.debug("renderTile tile_depth")
+            tile_depth =
+                ((T * alpha)
+                * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+                    axis: 1
+                )
+            acc_alpha = acc_alphaFallback
+        }
         return (
             tile_color.reshaped([tileSizeRest.h, tileSizeRest.w, -1]),
             tile_depth.reshaped([tileSizeRest.h, tileSizeRest.w, -1]),
