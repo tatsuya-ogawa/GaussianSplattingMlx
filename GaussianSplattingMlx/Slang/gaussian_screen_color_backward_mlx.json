@@ -1,0 +1,68 @@
+{
+  "metal": "build/slang_screen_space/gaussian_screen_color_backward.metal",
+  "entry": "gaussian_screen_color_backward",
+  "kernel_name": "gaussian_screen_color_backward_slang_v1",
+  "kernel_var": "gaussian_screen_color_backwardKernel",
+  "input_names": [
+    "color_means3d_1",
+    "color_shs_1",
+    "color_cameraCenter_1",
+    "color_cotColor_1",
+    "color_counts_1"
+  ],
+  "output_names": [
+    "color_gradMeans3d_1",
+    "color_gradShs_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= color_counts_1[int(0)])\n{\n    return;\n}\n\nint degree_0 = int(color_counts_1[int(1)]);\nint _S1 = degree_0 + int(1);\nint _S2 = _S1 * _S1;\nint coeffStride_0 = int(color_counts_1[int(2)]);\nuint meansBase_0 = p_0 * 3U;\n\nfloat x_0 = color_means3d_1[meansBase_0] - color_cameraCenter_1[int(0)];\nuint _S3 = meansBase_0 + 1U;\nfloat y_0 = color_means3d_1[_S3] - color_cameraCenter_1[int(1)];\nuint _S4 = meansBase_0 + 2U;\nfloat z_0 = color_means3d_1[_S4] - color_cameraCenter_1[int(2)];\nfloat xx_0 = x_0 * x_0;\nfloat yy_0 = y_0 * y_0;\nfloat zz_0 = z_0 * z_0;\nfloat xy_0 = x_0 * y_0;\nfloat yz_0 = y_0 * z_0;\nfloat xz_0 = x_0 * z_0;\n\nthread array<float, int(25)> basis_0;\nthread array<float, int(25)> dbx_0;\nthread array<float, int(25)> dby_0;\nthread array<float, int(25)> dbz_0;\nint i_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(25))\n    {\n    }\n    else\n    {\n        break;\n    }\n    basis_0[i_0] = 0.0;\n    dbx_0[i_0] = 0.0;\n    dby_0[i_0] = 0.0;\n    dbz_0[i_0] = 0.0;\n    i_0 = i_0 + int(1);\n}\nbasis_0[int(0)] = 0.282094806432724;\nif(degree_0 > int(0))\n{\n    basis_0[int(1)] = -0.48860251903533936 * y_0;\n    basis_0[int(2)] = 0.48860251903533936 * z_0;\n    basis_0[int(3)] = -0.48860251903533936 * x_0;\n    dby_0[int(1)] = -0.48860251903533936;\n    dbz_0[int(2)] = 0.48860251903533936;\n    dbx_0[int(3)] = -0.48860251903533936;\n}\nif(degree_0 > int(1))\n{\n    basis_0[int(4)] = 1.09254848957061768 * xy_0;\n    basis_0[int(5)] = -1.09254848957061768 * yz_0;\n    basis_0[int(6)] = 0.31539157032966614 * (2.0 * zz_0 - xx_0 - yy_0);\n    basis_0[int(7)] = -1.09254848957061768 * xz_0;\n    basis_0[int(8)] = 0.54627424478530884 * (xx_0 - yy_0);\n\n    dbx_0[int(4)] = 1.09254848957061768 * y_0;\n    dby_0[int(4)] = 1.09254848957061768 * x_0;\n    float _S5 = -1.09254848957061768 * z_0;\n    dby_0[int(5)] = _S5;\n    dbz_0[int(5)] = -1.09254848957061768 * y_0;\n    dbx_0[int(6)] = 0.31539157032966614 * (-2.0 * x_0);\n    float _S6 = -2.0 * y_0;\n    dby_0[int(6)] = 0.31539157032966614 * _S6;\n    dbz_0[int(6)] = 0.31539157032966614 * (4.0 * z_0);\n    dbx_0[int(7)] = _S5;\n    dbz_0[int(7)] = -1.09254848957061768 * x_0;\n    dbx_0[int(8)] = 0.54627424478530884 * (2.0 * x_0);\n    dby_0[int(8)] = 0.54627424478530884 * _S6;\n}\nif(degree_0 > int(2))\n{\n    float _S7 = 3.0 * xx_0;\n    basis_0[int(9)] = -0.59004360437393188 * y_0 * (_S7 - yy_0);\n    float _S8 = 2.89061141014099121 * xy_0;\n    basis_0[int(10)] = _S8 * z_0;\n    float _S9 = 4.0 * zz_0;\n    float _S10 = _S9 - xx_0;\n    float _S11 = _S10 - yy_0;\n    basis_0[int(11)] = -0.4570457935333252 * y_0 * _S11;\n    float _S12 = 3.0 * yy_0;\n    basis_0[int(12)] = 0.37317633628845215 * z_0 * (2.0 * zz_0 - _S7 - _S12);\n    basis_0[int(13)] = -0.4570457935333252 * x_0 * _S11;\n    float _S13 = xx_0 - yy_0;\n    basis_0[int(14)] = 1.44530570507049561 * z_0 * _S13;\n    basis_0[int(15)] = -0.59004360437393188 * x_0 * (xx_0 - _S12);\n\n    dbx_0[int(9)] = -0.59004360437393188 * (6.0 * x_0 * y_0);\n    float _S14 = -0.59004360437393188 * (_S7 - _S12);\n    dby_0[int(9)] = _S14;\n    dbx_0[int(10)] = 2.89061141014099121 * yz_0;\n    dby_0[int(10)] = 2.89061141014099121 * xz_0;\n    dbz_0[int(10)] = _S8;\n    float _S15 = -0.4570457935333252 * (-2.0 * x_0 * y_0);\n    dbx_0[int(11)] = _S15;\n    dby_0[int(11)] = -0.4570457935333252 * (_S10 - _S12);\n    dbz_0[int(11)] = -0.4570457935333252 * (8.0 * y_0 * z_0);\n    float _S16 = -6.0 * x_0;\n    dbx_0[int(12)] = 0.37317633628845215 * (_S16 * z_0);\n    dby_0[int(12)] = 0.37317633628845215 * (-6.0 * y_0 * z_0);\n    dbz_0[int(12)] = 0.37317633628845215 * (6.0 * zz_0 - _S7 - _S12);\n    dbx_0[int(13)] = -0.4570457935333252 * (_S9 - _S7 - yy_0);\n    dby_0[int(13)] = _S15;\n    dbz_0[int(13)] = -0.4570457935333252 * (8.0 * x_0 * z_0);\n    dbx_0[int(14)] = 1.44530570507049561 * (2.0 * x_0 * z_0);\n    dby_0[int(14)] = 1.44530570507049561 * (-2.0 * y_0 * z_0);\n    dbz_0[int(14)] = 1.44530570507049561 * _S13;\n    dbx_0[int(15)] = _S14;\n    dby_0[int(15)] = -0.59004360437393188 * (_S16 * y_0);\n}\nif(degree_0 > int(3))\n{\n    float _S17 = xx_0 - yy_0;\n    basis_0[int(16)] = 2.50334286689758301 * xy_0 * _S17;\n    float _S18 = 3.0 * xx_0;\n    float _S19 = _S18 - yy_0;\n    basis_0[int(17)] = -1.77013075351715088 * yz_0 * _S19;\n    float _S20 = 7.0 * zz_0;\n    float _S21 = _S20 - 1.0;\n    basis_0[int(18)] = 0.94617468118667603 * xy_0 * _S21;\n    float _S22 = _S20 - 3.0;\n    basis_0[int(19)] = -0.66904652118682861 * yz_0 * _S22;\n    basis_0[int(20)] = 0.1057855486869812 * (zz_0 * (35.0 * zz_0 - 30.0) + 3.0);\n    basis_0[int(21)] = -0.66904652118682861 * xz_0 * _S22;\n    basis_0[int(22)] = 0.47308734059333801 * _S17 * _S21;\n    float _S23 = xx_0 - 3.0 * yy_0;\n    basis_0[int(23)] = -1.77013075351715088 * xz_0 * _S23;\n    basis_0[int(24)] = 0.62583571672439575 * (xx_0 * _S23 - yy_0 * _S19);\n\n    dbx_0[int(16)] = 2.50334286689758301 * y_0 * _S19;\n    dby_0[int(16)] = 2.50334286689758301 * x_0 * _S23;\n    dbx_0[int(17)] = -1.77013075351715088 * (6.0 * x_0 * y_0 * z_0);\n    float _S24 = -1.77013075351715088 * (3.0 * z_0 * _S17);\n    dby_0[int(17)] = _S24;\n    dbz_0[int(17)] = -1.77013075351715088 * y_0 * _S19;\n    dbx_0[int(18)] = 0.94617468118667603 * y_0 * _S21;\n    dby_0[int(18)] = 0.94617468118667603 * x_0 * _S21;\n    dbz_0[int(18)] = 0.94617468118667603 * (14.0 * x_0 * y_0 * z_0);\n    float _S25 = -0.66904652118682861 * z_0 * _S22;\n    dby_0[int(19)] = _S25;\n    float _S26 = 21.0 * zz_0 - 3.0;\n    dbz_0[int(19)] = -0.66904652118682861 * y_0 * _S26;\n    dbz_0[int(20)] = 0.1057855486869812 * (140.0 * z_0 * z_0 * z_0 - 60.0 * z_0);\n    dbx_0[int(21)] = _S25;\n    dbz_0[int(21)] = -0.66904652118682861 * x_0 * _S26;\n    dbx_0[int(22)] = 0.47308734059333801 * (2.0 * x_0) * _S21;\n    dby_0[int(22)] = 0.47308734059333801 * (-2.0 * y_0) * _S21;\n    dbz_0[int(22)] = 0.47308734059333801 * (14.0 * z_0 * _S17);\n    dbx_0[int(23)] = _S24;\n    dby_0[int(23)] = -1.77013075351715088 * (-6.0 * x_0 * y_0 * z_0);\n    dbz_0[int(23)] = -1.77013075351715088 * x_0 * _S23;\n    dbx_0[int(24)] = 0.62583571672439575 * (4.0 * x_0 * _S23);\n    dby_0[int(24)] = 0.62583571672439575 * (4.0 * y_0 * (yy_0 - _S18));\n}\nuint _S27 = p_0 * uint(coeffStride_0 * int(3));\nint ch_0 = int(0);\nfloat gradX_0 = 0.0;\nfloat gradY_0 = 0.0;\nfloat gradZ_0 = 0.0;\nfor(;;)\n{\n    if(ch_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    int k_0 = int(0);\n    float value_0 = 0.0;\n\n    for(;;)\n    {\n        if(k_0 < _S2)\n        {\n        }\n        else\n        {\n            break;\n        }\n\n        float value_1 = value_0 + basis_0[k_0] * color_shs_1[_S27 + uint(k_0 * int(3) + ch_0)];\n        k_0 = k_0 + int(1);\n        value_0 = value_1;\n    }\n    float _S28 = color_cotColor_1[meansBase_0 + uint(ch_0)];\n    float g_0;\n    if((value_0 + 0.5) <= 0.0)\n    {\n        g_0 = 0.0;\n    }\n    else\n    {\n        g_0 = _S28;\n    }\n    int k_1 = int(0);\n    for(;;)\n    {\n        if(k_1 < _S2)\n        {\n        }\n        else\n        {\n            break;\n        }\n        uint shIndex_0 = _S27 + uint(k_1 * int(3) + ch_0);\n        *(color_gradShs_1+shIndex_0) = g_0 * basis_0[k_1];\n\n        float _S29 = g_0 * color_shs_1[shIndex_0];\n        float gradX_1 = gradX_0 + _S29 * dbx_0[k_1];\n        float gradY_1 = gradY_0 + _S29 * dby_0[k_1];\n        float gradZ_1 = gradZ_0 + _S29 * dbz_0[k_1];\n        k_1 = k_1 + int(1);\n        gradX_0 = gradX_1;\n        gradY_0 = gradY_1;\n        gradZ_0 = gradZ_1;\n    }\n    ch_0 = ch_0 + int(1);\n}\n*(color_gradMeans3d_1+meansBase_0) = gradX_0;\n*(color_gradMeans3d_1+_S3) = gradY_0;\n*(color_gradMeans3d_1+_S4) = gradZ_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "color_means3d_1",
+      "buffer_index": 0,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "color_shs_1",
+      "buffer_index": 1,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "color_cameraCenter_1",
+      "buffer_index": 2,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "color_cotColor_1",
+      "buffer_index": 3,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "color_counts_1",
+      "buffer_index": 4,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "color_gradMeans3d_1",
+      "buffer_index": 6,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "color_gradShs_1",
+      "buffer_index": 7,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_screen_space/gaussian_screen_color_backward_mlx.swift"
+}
