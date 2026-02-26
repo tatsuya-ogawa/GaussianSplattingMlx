@@ -405,6 +405,167 @@ class GaussianRenderer {
         return build_covariance_3d(s: scales, r: rotations)
     }
 
+    // MARK: - Fused screen-space kernel (cov3d + color + cov2d + inverse2d in one dispatch)
+
+    private lazy var fusedScreenSpaceCustomFunction: (([MLXArray]) -> [MLXArray])? = {
+        guard useScreenSpaceCustomOp else {
+            return nil
+        }
+        guard
+            let fusedForwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_fused_forward_mlx"),
+            let fusedBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_fused_backward_mlx")
+        else {
+            Logger.shared.debug("Fused screen-space kernels are unavailable. Falling back to separate kernels.")
+            return nil
+        }
+
+        let activeShDegree = self.active_sh_degree
+        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
+            let meanNdc = inputs[0]
+            let scales = inputs[1]
+            let rotations = inputs[2]
+            let means3d = inputs[3]
+            let shs = inputs[4]
+            let cameraCenter = inputs[5]
+            let viewMatrix = inputs[6]
+            let fovX = inputs[7]
+            let fovY = inputs[8]
+            let focalX = inputs[9]
+            let focalY = inputs[10]
+            let imageWidth = inputs[11]
+            let imageHeight = inputs[12]
+
+            let fovXKernel = fovX.reshaped([1])
+            let fovYKernel = fovY.reshaped([1])
+            let focalXKernel = focalX.reshaped([1])
+            let focalYKernel = focalY.reshaped([1])
+
+            let activeCount = meanNdc.shape[0]
+            let paddedCount = Swift.max(activeCount, Self.screenSpaceCustomMinPointCount)
+            let meanNdcPadded = Self.padFirstDimToAtLeast(meanNdc, count: paddedCount)
+            let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+            let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+            let means3dPadded = Self.padFirstDimToAtLeast(means3d, count: paddedCount)
+            let shsPadded = Self.padFirstDimToAtLeast(shs, count: paddedCount)
+            let counts = MLXArray(
+                [UInt32(paddedCount), UInt32(activeShDegree), UInt32(shsPadded.shape[1])]
+            )
+
+            let outputs = fusedForwardKernel(
+                [
+                    scalesPadded, rotationsPadded, means3dPadded, shsPadded,
+                    cameraCenter, viewMatrix, fovXKernel, fovYKernel, focalXKernel, focalYKernel,
+                    counts,
+                ],
+                grid: (max(paddedCount, 1), 1, 1),
+                threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                outputShapes: [[paddedCount, 3], [paddedCount, 2, 2], [paddedCount, 2, 2]],
+                outputDTypes: [means3d.dtype, means3d.dtype, means3d.dtype]
+            )
+
+            let colorPadded = outputs[0]
+            let cov2dPadded = outputs[1]
+            let conicPadded = outputs[2]
+
+            let meanCoordX = ((meanNdcPadded[.ellipsis, 0] + 1) * imageWidth - 1.0) * 0.5
+            let meanCoordY = ((meanNdcPadded[.ellipsis, 1] + 1) * imageHeight - 1.0) * 0.5
+            let means2dPadded = MLX.stacked([meanCoordX, meanCoordY], axis: -1)
+
+            return [
+                Self.sliceFirstDim(means2dPadded, count: activeCount),
+                Self.sliceFirstDim(cov2dPadded, count: activeCount),
+                Self.sliceFirstDim(colorPadded, count: activeCount),
+                Self.sliceFirstDim(conicPadded, count: activeCount),
+            ]
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let meanNdc = primals[0]
+                let scales = primals[1]
+                let rotations = primals[2]
+                let means3d = primals[3]
+                let shs = primals[4]
+                let cameraCenter = primals[5]
+                let viewMatrix = primals[6]
+                let fovX = primals[7]
+                let fovY = primals[8]
+                let focalX = primals[9]
+                let focalY = primals[10]
+                let imageWidth = primals[11]
+                let imageHeight = primals[12]
+                let fovXKernel = fovX.reshaped([1])
+                let fovYKernel = fovY.reshaped([1])
+                let focalXKernel = focalX.reshaped([1])
+                let focalYKernel = focalY.reshaped([1])
+
+                let cotMeans2d = cotangents[0]
+                let cotCov2d = cotangents[1]
+                let cotColor = cotangents[2]
+                let cotConic = cotangents[3]
+
+                let activeCount = meanNdc.shape[0]
+                let paddedCount = Swift.max(activeCount, Self.screenSpaceCustomMinPointCount)
+                let meanNdcPadded = Self.padFirstDimToAtLeast(meanNdc, count: paddedCount)
+                let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+                let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+                let means3dPadded = Self.padFirstDimToAtLeast(means3d, count: paddedCount)
+                let shsPadded = Self.padFirstDimToAtLeast(shs, count: paddedCount)
+                let cotMeans2dPadded = Self.padFirstDimToAtLeast(cotMeans2d, count: paddedCount)
+                let cotCov2dPadded = Self.padFirstDimToAtLeast(cotCov2d, count: paddedCount)
+                let cotColorPadded = Self.padFirstDimToAtLeast(cotColor, count: paddedCount)
+                let cotConicPadded = Self.padFirstDimToAtLeast(cotConic, count: paddedCount)
+
+                let counts = MLXArray(
+                    [UInt32(paddedCount), UInt32(activeShDegree), UInt32(shsPadded.shape[1])]
+                )
+
+                let grads = fusedBackwardKernel(
+                    [
+                        scalesPadded, rotationsPadded, means3dPadded, shsPadded,
+                        cameraCenter, viewMatrix, fovXKernel, fovYKernel, focalXKernel, focalYKernel,
+                        cotColorPadded, cotCov2dPadded, cotConicPadded, counts,
+                    ],
+                    grid: (max(paddedCount, 1), 1, 1),
+                    threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                    outputShapes: [scalesPadded.shape, rotationsPadded.shape, means3dPadded.shape, shsPadded.shape],
+                    outputDTypes: [scales.dtype, rotations.dtype, means3d.dtype, shs.dtype],
+                    initValue: 0.0
+                )
+
+                let gradScalesPadded = grads[0]
+                let gradRotationsPadded = grads[1]
+                let gradMeans3dPadded = grads[2]
+                let gradShsPadded = grads[3]
+
+                let gradMeanNdcPadded = MLXArray.zeros(meanNdcPadded.shape, dtype: meanNdc.dtype)
+                gradMeanNdcPadded[.ellipsis, 0] = cotMeans2dPadded[.ellipsis, 0] * imageWidth * 0.5
+                gradMeanNdcPadded[.ellipsis, 1] = cotMeans2dPadded[.ellipsis, 1] * imageHeight * 0.5
+
+                let gradCameraCenter = -(Self.sliceFirstDim(gradMeans3dPadded, count: activeCount).sum(axis: 0)).expandedDimensions(axes: [0])
+
+                return [
+                    Self.sliceFirstDim(gradMeanNdcPadded, count: activeCount),
+                    Self.sliceFirstDim(gradScalesPadded, count: activeCount),
+                    Self.sliceFirstDim(gradRotationsPadded, count: activeCount),
+                    Self.sliceFirstDim(gradMeans3dPadded, count: activeCount),
+                    Self.sliceFirstDim(gradShsPadded, count: activeCount),
+                    gradCameraCenter,
+                    MLXArray.zeros(viewMatrix.shape, dtype: viewMatrix.dtype),
+                    MLXArray.zeros(fovX.shape, dtype: fovX.dtype),
+                    MLXArray.zeros(fovY.shape, dtype: fovY.dtype),
+                    MLXArray.zeros(focalX.shape, dtype: focalX.dtype),
+                    MLXArray.zeros(focalY.shape, dtype: focalY.dtype),
+                    MLXArray.zeros(imageWidth.shape, dtype: imageWidth.dtype),
+                    MLXArray.zeros(imageHeight.shape, dtype: imageHeight.dtype),
+                ]
+            }
+        }
+    }()
+
     private lazy var screenSpaceCustomFunction: (([MLXArray]) -> [MLXArray])? = {
         guard useScreenSpaceCustomOp else {
             return nil
@@ -1032,36 +1193,46 @@ class GaussianRenderer {
         let opacity = opacity[in_mask][depthSortIndices]
         let scales = scales[in_mask][depthSortIndices]
         let rotations = rotations[in_mask][depthSortIndices]
-        Logger.shared.debug("build_covariance_3d")
-        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
         let imageWidthArray = MLXArray(Float(imageWidth))
         let imageHeightArray = MLXArray(Float(imageHeight))
 
         let screenSpace: [MLXArray]
-        if let screenSpaceCustomFunction {
-            Logger.shared.debug("build_screen_space_custom")
-            screenSpace = screenSpaceCustomFunction(
+        if let fusedScreenSpaceCustomFunction {
+            Logger.shared.debug("build_screen_space_fused")
+            screenSpace = fusedScreenSpaceCustomFunction(
                 [
-                    mean_ndc, means3d, shs, cov3d, cameraCenter, viewMatrix,
+                    mean_ndc, scales, rotations, means3d, shs, cameraCenter, viewMatrix,
                     fovX, fovY, focalX, focalY, imageWidthArray, imageHeightArray,
                 ]
             )
         } else {
-            Logger.shared.debug("build_screen_space_fallback")
-            screenSpace = buildScreenSpaceFallback(
-                meanNdc: mean_ndc,
-                means3d: means3d,
-                shs: shs,
-                cov3d: cov3d,
-                cameraCenter: cameraCenter,
-                viewMatrix: viewMatrix,
-                fovX: fovX,
-                fovY: fovY,
-                focalX: focalX,
-                focalY: focalY,
-                imageWidth: imageWidthArray,
-                imageHeight: imageHeightArray
-            )
+            Logger.shared.debug("build_covariance_3d")
+            let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
+            if let screenSpaceCustomFunction {
+                Logger.shared.debug("build_screen_space_custom")
+                screenSpace = screenSpaceCustomFunction(
+                    [
+                        mean_ndc, means3d, shs, cov3d, cameraCenter, viewMatrix,
+                        fovX, fovY, focalX, focalY, imageWidthArray, imageHeightArray,
+                    ]
+                )
+            } else {
+                Logger.shared.debug("build_screen_space_fallback")
+                screenSpace = buildScreenSpaceFallback(
+                    meanNdc: mean_ndc,
+                    means3d: means3d,
+                    shs: shs,
+                    cov3d: cov3d,
+                    cameraCenter: cameraCenter,
+                    viewMatrix: viewMatrix,
+                    fovX: fovX,
+                    fovY: fovY,
+                    focalX: focalX,
+                    focalY: focalY,
+                    imageWidth: imageWidthArray,
+                    imageHeight: imageHeightArray
+                )
+            }
         }
 
         let means2d = screenSpace[ScreenSpaceCustomOutputIndex.means2d]
@@ -1114,8 +1285,6 @@ class GaussianRenderer {
         let opacity = opacity[in_mask][depthSortIndices]
         let scales = scales[in_mask][depthSortIndices]
         let rotations = rotations[in_mask][depthSortIndices]
-        Logger.shared.debug("build_covariance_3d")
-        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
         let cameraCenter = MLXArray(
             [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
                 as [Float])[.newAxis, .ellipsis]
@@ -1123,23 +1292,36 @@ class GaussianRenderer {
         let imageHeight = MLXArray(Float(camera.imageHeight))
 
         let screenSpace: [MLXArray]
-        if let screenSpaceCustomFunction {
-            Logger.shared.debug("build_screen_space_custom")
-            screenSpace = screenSpaceCustomFunction(
+        if let fusedScreenSpaceCustomFunction {
+            Logger.shared.debug("build_screen_space_fused")
+            screenSpace = fusedScreenSpaceCustomFunction(
                 [
-                    mean_ndc, means3d, shs, cov3d, cameraCenter, camera.worldViewTransform,
-                    camera.FoVx, camera.FoVy, camera.focalX, camera.focalY, imageWidth, imageHeight,
+                    mean_ndc, scales, rotations, means3d, shs, cameraCenter,
+                    camera.worldViewTransform, camera.FoVx, camera.FoVy,
+                    camera.focalX, camera.focalY, imageWidth, imageHeight,
                 ]
             )
         } else {
-            Logger.shared.debug("build_screen_space_fallback")
-            screenSpace = buildScreenSpaceFallback(
-                camera: camera,
-                meanNdc: mean_ndc,
-                means3d: means3d,
-                shs: shs,
-                cov3d: cov3d
-            )
+            Logger.shared.debug("build_covariance_3d")
+            let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
+            if let screenSpaceCustomFunction {
+                Logger.shared.debug("build_screen_space_custom")
+                screenSpace = screenSpaceCustomFunction(
+                    [
+                        mean_ndc, means3d, shs, cov3d, cameraCenter, camera.worldViewTransform,
+                        camera.FoVx, camera.FoVy, camera.focalX, camera.focalY, imageWidth, imageHeight,
+                    ]
+                )
+            } else {
+                Logger.shared.debug("build_screen_space_fallback")
+                screenSpace = buildScreenSpaceFallback(
+                    camera: camera,
+                    meanNdc: mean_ndc,
+                    means3d: means3d,
+                    shs: shs,
+                    cov3d: cov3d
+                )
+            }
         }
 
         let means2d = screenSpace[ScreenSpaceCustomOutputIndex.means2d]
