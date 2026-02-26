@@ -112,6 +112,14 @@ struct TILE_SIZE_H_W {
     let w: Int
     let h: Int
 }
+
+private struct TileEntry {
+    let h: Int
+    let w: Int
+    let size: TILE_SIZE_H_W
+    let tileCoord: MLXArray
+}
+
 class GaussianRenderer {
     private enum ScreenSpaceCustomOutputIndex {
         static let means2d = 0
@@ -132,6 +140,7 @@ class GaussianRenderer {
     let TILE_SIZE: TILE_SIZE_H_W
     let useFusedTileCustomOp: Bool
     let useScreenSpaceCustomOp: Bool
+    private let tileEntries: [TileEntry]
 
     private static func padFirstDimToAtLeast(_ value: MLXArray, count: Int) -> MLXArray {
         let currentCount = value.shape[0]
@@ -549,15 +558,51 @@ class GaussianRenderer {
         self.W = W
         self.H = H
         self.pix_coord = createMeshGrid(shape: [H, W])
+        self.tileEntries = Self.makeTileEntries(
+            width: W,
+            height: H,
+            tileSize: TILE_SIZE,
+            pixCoord: self.pix_coord
+        )
         if useFusedTileCustomOp {
             _ = fusedTileCompositeCustomFunction
         }
     }
 
-    func renderTile(
-        h: Int,
-        w: Int,
+    private static func makeTileEntries(
+        width: Int,
+        height: Int,
         tileSize: TILE_SIZE_H_W,
+        pixCoord: MLXArray
+    ) -> [TileEntry] {
+        var entries: [TileEntry] = []
+        for h in stride(from: 0, to: height, by: tileSize.h) {
+            for w in stride(from: 0, to: width, by: tileSize.w) {
+                let tileSizeRest = TILE_SIZE_H_W(
+                    w: Swift.min(width - w, tileSize.w),
+                    h: Swift.min(height - h, tileSize.h)
+                )
+                let tileCoord = MLX.stopGradient(
+                    pixCoord[
+                        .stride(from: h, to: h + tileSizeRest.h),
+                        .stride(from: w, to: w + tileSizeRest.w)
+                    ].flattened(start: 0, end: -2)
+                ).asType(.float32)
+                entries.append(
+                    TileEntry(
+                        h: h,
+                        w: w,
+                        size: tileSizeRest,
+                        tileCoord: tileCoord
+                    )
+                )
+            }
+        }
+        return entries
+    }
+
+    private func renderTile(
+        tile: TileEntry,
         means2d: MLXArray,
         cov2d: MLXArray,
         color: MLXArray,
@@ -568,10 +613,9 @@ class GaussianRenderer {
         rect: (MLXArray, MLXArray),
         skipThreshold: Int = 0
     ) -> (MLXArray, MLXArray, MLXArray) {
-        let tileSizeRest = TILE_SIZE_H_W(
-            w: Swift.min(self.W - w, tileSize.w),
-            h: Swift.min(self.H - h, tileSize.h)
-        )
+        let h = tile.h
+        let w = tile.w
+        let tileSizeRest = tile.size
         Logger.shared.debug("computeTileMask")
         let in_mask_condition = computeTileMask(
             h: h,
@@ -590,12 +634,7 @@ class GaussianRenderer {
                 MLXArray.zeros([tileSizeRest.h, tileSizeRest.w, 1])
             )
         }
-        let tile_coord = MLX.stopGradient(
-            self.pix_coord[
-                .stride(from: h, to: h + tileSizeRest.h),
-                .stride(from: w, to: w + tileSizeRest.w)
-            ].flattened(start: 0, end: -2)
-        )
+        let tile_coord = tile.tileCoord
         Logger.shared.debug("getSortedValues")
         let sortedValues = getSortedValues(
             means2d: means2d,
@@ -634,7 +673,7 @@ class GaussianRenderer {
                 count: Self.fusedTileCustomMinGaussianCount
             )
             if let blended = renderTileCompositeCustomOp(
-                tileCoord: tile_coord.asType(.float32),
+                tileCoord: tile_coord,
                 sortedDepths: sortedDepthsPadded,
                 sortedMeans2d: sortedMeans2dPadded,
                 sortedConic: sortedConicPadded,
@@ -742,6 +781,10 @@ class GaussianRenderer {
         visiility_filter: MLXArray,
         radii: MLXArray
     ) {
+        precondition(
+            camera.imageWidth == self.W && camera.imageHeight == self.H,
+            "Renderer image size mismatch: expected (\(self.W), \(self.H)), got (\(camera.imageWidth), \(camera.imageHeight))"
+        )
         Logger.shared.debug("get_radius")
         let radii = get_radius(cov2d: cov2d)
         Logger.shared.debug("get_rect")
@@ -755,38 +798,34 @@ class GaussianRenderer {
         let render_color = MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
         let render_depth = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
         let render_alpha = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
-        for h in stride(from: 0, to: camera.imageHeight, by: TILE_SIZE.h) {
-            for w in stride(from: 0, to: camera.imageWidth, by: TILE_SIZE.w) {
-                Logger.shared.debug("before renderTile")
-                let (tile_color, tile_depth, acc_alpha) = renderTile(
-                    h: h,
-                    w: w,
-                    tileSize: TILE_SIZE,
-                    means2d: means2d,
-                    cov2d: cov2d,
-                    color: color,
-                    opacity: opacity,
-                    depths: depths,
-                    conic: conic,
-                    inputIsDepthSorted: inputIsDepthSorted,
-                    rect: rect
-                )
-                Logger.shared.debug("after renderTile")
-                Logger.shared.debug("before assign")
-                render_color[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = tile_color
-                render_depth[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = tile_depth
-                render_alpha[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = acc_alpha
-                Logger.shared.debug("after assign")
-            }
+        for tile in tileEntries {
+            Logger.shared.debug("before renderTile")
+            let (tile_color, tile_depth, acc_alpha) = renderTile(
+                tile: tile,
+                means2d: means2d,
+                cov2d: cov2d,
+                color: color,
+                opacity: opacity,
+                depths: depths,
+                conic: conic,
+                inputIsDepthSorted: inputIsDepthSorted,
+                rect: rect
+            )
+            Logger.shared.debug("after renderTile")
+            Logger.shared.debug("before assign")
+            render_color[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = tile_color
+            render_depth[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = tile_depth
+            render_alpha[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = acc_alpha
+            Logger.shared.debug("after assign")
         }
 
         return (render_color, render_depth, render_alpha, radii .> 0, radii)
