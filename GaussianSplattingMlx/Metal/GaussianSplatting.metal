@@ -207,9 +207,9 @@ kernel void renderTiles(
     device const ProjectedGaussian* sortedGaussians [[buffer(0)]],
     device const uint* tileAssignments [[buffer(1)]],
     device const uint* tileCounts [[buffer(2)]],
-    device float4* outputImage [[buffer(3)]],
-    constant uint2& imageSize [[buffer(4)]],
-    constant uint2& tileSize [[buffer(5)]],
+    texture2d<float, access::write> outputImage [[texture(0)]],
+    constant uint2& imageSize [[buffer(3)]],
+    constant uint2& tileSize [[buffer(4)]],
     uint2 pixelCoord [[thread_position_in_grid]]
 ) {
     if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
@@ -256,6 +256,5 @@ kernel void renderTiles(
     float3 backgroundColor = float3(0.0f); // Black background
     float3 finalColor = accumulatedColor + T * backgroundColor;
     
-    uint pixelIndex = pixelCoord.y * imageSize.x + pixelCoord.x;
-    outputImage[pixelIndex] = float4(finalColor, accumulatedAlpha);
+    outputImage.write(float4(finalColor, accumulatedAlpha), pixelCoord);
 }

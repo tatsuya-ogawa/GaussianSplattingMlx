@@ -35,7 +35,12 @@ struct MetalProjectedGaussian {
     var originalIndex: UInt32
 }
 
-class MetalGaussianRenderer {
+final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
+    private struct FullscreenVertex {
+        var position: SIMD2<Float>
+        var texCoord: SIMD2<Float>
+    }
+    
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let library: MTLLibrary
@@ -56,14 +61,20 @@ class MetalGaussianRenderer {
     private var sortIndicesBuffer: MTLBuffer?
     private var tileAssignmentsBuffer: MTLBuffer?
     private var tileCountsBuffer: MTLBuffer?
-    private var outputImageBuffer: MTLBuffer?
     
     // Textures
     private var outputTexture: MTLTexture?
     
+    // Display
+    private weak var attachedView: MTKView?
+    private let displayPipeline: MTLRenderPipelineState
+    private let displayVertexBuffer: MTLBuffer
+    
     // Configuration
     private let maxGaussians: Int
     private var tileSize: SIMD2<UInt32>
+    
+    var metalDevice: MTLDevice { device }
     
     init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64)) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -87,6 +98,13 @@ class MetalGaussianRenderer {
         }
         self.library = library
         
+        guard let displayVertexFunction = library.makeFunction(name: "vertexShader"),
+              let displayFragmentFunction = library.makeFunction(name: "fragmentShader")
+        else {
+            print("Failed to create display Metal functions")
+            return nil
+        }
+        
         // Create compute pipelines
         guard let projectFunction = library.makeFunction(name: "projectGaussians"),
               let sortFunction = library.makeFunction(name: "sortGaussiansByDepth"),
@@ -103,11 +121,41 @@ class MetalGaussianRenderer {
             self.renderTilesPipeline = try device.makeComputePipelineState(function: renderFunction)
             self.assignTilesPipeline = try device.makeComputePipelineState(function: assignFunction)
             self.clearBuffersPipeline = try device.makeComputePipelineState(function: clearFunction)
+            
+            let vertexDescriptor = MTLVertexDescriptor()
+            vertexDescriptor.attributes[0].format = .float2
+            vertexDescriptor.attributes[0].offset = 0
+            vertexDescriptor.attributes[0].bufferIndex = 0
+            vertexDescriptor.attributes[1].format = .float2
+            vertexDescriptor.attributes[1].offset = MemoryLayout<SIMD2<Float>>.stride
+            vertexDescriptor.attributes[1].bufferIndex = 0
+            vertexDescriptor.layouts[0].stride = MemoryLayout<FullscreenVertex>.stride
+            
+            let pipelineDescriptor = MTLRenderPipelineDescriptor()
+            pipelineDescriptor.vertexFunction = displayVertexFunction
+            pipelineDescriptor.fragmentFunction = displayFragmentFunction
+            pipelineDescriptor.vertexDescriptor = vertexDescriptor
+            pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            self.displayPipeline = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+            
+            let vertices: [FullscreenVertex] = [
+                FullscreenVertex(position: SIMD2<Float>(-1, -1), texCoord: SIMD2<Float>(0, 1)),
+                FullscreenVertex(position: SIMD2<Float>(1, -1), texCoord: SIMD2<Float>(1, 1)),
+                FullscreenVertex(position: SIMD2<Float>(-1, 1), texCoord: SIMD2<Float>(0, 0)),
+                FullscreenVertex(position: SIMD2<Float>(1, 1), texCoord: SIMD2<Float>(1, 0)),
+            ]
+            let vertexLength = MemoryLayout<FullscreenVertex>.stride * vertices.count
+            guard let vertexBuffer = device.makeBuffer(bytes: vertices, length: vertexLength, options: .storageModeShared) else {
+                print("Failed to create display vertex buffer")
+                return nil
+            }
+            self.displayVertexBuffer = vertexBuffer
         } catch {
             print("Failed to create compute pipeline states: \(error)")
             return nil
         }
         
+        super.init()
         allocateBuffers()
     }
     
@@ -127,6 +175,33 @@ class MetalGaussianRenderer {
         tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles, options: .storageModeShared)
     }
     
+    func attach(to view: MTKView) {
+        if view.device !== device {
+            view.device = device
+        }
+        view.delegate = self
+        view.framebufferOnly = false
+        view.colorPixelFormat = .bgra8Unorm
+        view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        view.enableSetNeedsDisplay = true
+        view.isPaused = true
+        attachedView = view
+    }
+    
+    func detach() {
+        if attachedView?.delegate === self {
+            attachedView?.delegate = nil
+        }
+        attachedView = nil
+    }
+    
+    func clearFrame() {
+        outputTexture = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.attachedView?.setNeedsDisplay()
+        }
+    }
+    
     func render(
         camera: Camera,
         means3d: MLXArray,
@@ -136,15 +211,15 @@ class MetalGaussianRenderer {
         rotations: MLXArray,
         width: Int,
         height: Int
-    ) -> MTLTexture? {
+    ) {
         
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         
         // Convert MLX data to Metal format
         let numGaussians = means3d.shape[0]
         guard numGaussians <= maxGaussians else {
             print("Too many gaussians: \(numGaussians) > \(maxGaussians)")
-            return nil
+            return
         }
         
         prepareGaussianData(
@@ -160,7 +235,7 @@ class MetalGaussianRenderer {
         
         // Create output texture
         createOutputTexture(width: width, height: height)
-        guard let outputTexture = outputTexture else { return nil }
+        guard outputTexture != nil else { return }
         
         // 1. Project Gaussians to 2D
         projectGaussians(commandBuffer: commandBuffer, cameraParams: cameraParams, numGaussians: numGaussians)
@@ -174,25 +249,12 @@ class MetalGaussianRenderer {
         // 4. Render tiles
         renderTiles(commandBuffer: commandBuffer, width: width, height: height)
         
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        
-        logFrameStats(numGaussians: numGaussians, width: width, height: height)
-        
-        // Render result is written to outputImageBuffer by compute kernels.
-        // Copy it into outputTexture so callers can consume one texture output.
-        if let outputImageBuffer = outputImageBuffer {
-            let region = MTLRegionMake2D(0, 0, width, height)
-            let bytesPerRow = MemoryLayout<SIMD4<Float>>.stride * width
-            outputTexture.replace(
-                region: region,
-                mipmapLevel: 0,
-                withBytes: outputImageBuffer.contents(),
-                bytesPerRow: bytesPerRow
-            )
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.attachedView?.setNeedsDisplay()
+            }
         }
-        
-        return outputTexture
+        commandBuffer.commit()
     }
     
     private func logFrameStats(numGaussians: Int, width: Int, height: Int) {
@@ -323,6 +385,12 @@ class MetalGaussianRenderer {
     }
     
     private func createOutputTexture(width: Int, height: Int) {
+        if let outputTexture,
+           outputTexture.width == width,
+           outputTexture.height == height {
+            return
+        }
+        
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba32Float,
             width: width,
@@ -330,15 +398,9 @@ class MetalGaussianRenderer {
             mipmapped: false
         )
         descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
+        descriptor.storageMode = .private
         
         outputTexture = device.makeTexture(descriptor: descriptor)
-        
-        // Also create output buffer for compute shader
-        outputImageBuffer = device.makeBuffer(
-            length: MemoryLayout<SIMD4<Float>>.stride * width * height,
-            options: .storageModeShared
-        )
     }
     
     private func projectGaussians(commandBuffer: MTLCommandBuffer, cameraParams: MetalCameraParams, numGaussians: Int) {
@@ -442,20 +504,17 @@ class MetalGaussianRenderer {
               let sortedGaussianBuffer = sortedGaussianBuffer,
               let tileAssignmentsBuffer = tileAssignmentsBuffer,
               let tileCountsBuffer = tileCountsBuffer,
-              let outputImageBuffer = outputImageBuffer else { return }
-        
-        // Clear output buffer
-        memset(outputImageBuffer.contents(), 0, outputImageBuffer.length)
+              let outputTexture = outputTexture else { return }
         
         computeEncoder.setComputePipelineState(renderTilesPipeline)
         computeEncoder.setBuffer(sortedGaussianBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(tileAssignmentsBuffer, offset: 0, index: 1)
         computeEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 2)
-        computeEncoder.setBuffer(outputImageBuffer, offset: 0, index: 3)
+        computeEncoder.setTexture(outputTexture, index: 0)
         
         var imageSize = SIMD2<UInt32>(UInt32(width), UInt32(height))
-        computeEncoder.setBytes(&imageSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 4)
-        computeEncoder.setBytes(&tileSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 5)
+        computeEncoder.setBytes(&imageSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 3)
+        computeEncoder.setBytes(&tileSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 4)
         
         // Use a safe 2D threadgroup size for all Apple GPUs (<= 1024 threads total).
         let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
@@ -464,91 +523,27 @@ class MetalGaussianRenderer {
         computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         computeEncoder.endEncoding()
     }
-}
-
-// Extension to convert Metal texture to UIImage
-extension MetalGaussianRenderer {
-    func textureToUIImage(_ texture: MTLTexture) -> UIImage? {
-        let width = texture.width
-        let height = texture.height
-        let region = MTLRegionMake2D(0, 0, width, height)
-        
-        switch texture.pixelFormat {
-        case .rgba32Float:
-            let componentsPerPixel = 4
-            let floatBytesPerRow = width * MemoryLayout<Float>.stride * componentsPerPixel
-            var floatPixels = [Float](repeating: 0, count: width * height * componentsPerPixel)
-            floatPixels.withUnsafeMutableBytes { rawBuffer in
-                guard let baseAddress = rawBuffer.baseAddress else { return }
-                texture.getBytes(baseAddress, bytesPerRow: floatBytesPerRow, from: region, mipmapLevel: 0)
-            }
-            
-            var rgba8Pixels = [UInt8](repeating: 0, count: width * height * 4)
-            for pixelIndex in 0..<(width * height) {
-                let src = pixelIndex * componentsPerPixel
-                let dst = pixelIndex * 4
-                rgba8Pixels[dst] = clampToUInt8(floatPixels[src])
-                rgba8Pixels[dst + 1] = clampToUInt8(floatPixels[src + 1])
-                rgba8Pixels[dst + 2] = clampToUInt8(floatPixels[src + 2])
-                rgba8Pixels[dst + 3] = clampToUInt8(floatPixels[src + 3])
-            }
-            return makeUIImageFromRGBA8(rgba8Pixels, width: width, height: height)
-            
-        case .rgba8Unorm, .rgba8Unorm_srgb:
-            let bytesPerRow = width * 4
-            var rgba8Pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-            rgba8Pixels.withUnsafeMutableBytes { rawBuffer in
-                guard let baseAddress = rawBuffer.baseAddress else { return }
-                texture.getBytes(baseAddress, bytesPerRow: bytesPerRow, from: region, mipmapLevel: 0)
-            }
-            return makeUIImageFromRGBA8(rgba8Pixels, width: width, height: height)
-            
-        case .bgra8Unorm, .bgra8Unorm_srgb:
-            let bytesPerRow = width * 4
-            var bgra8Pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-            bgra8Pixels.withUnsafeMutableBytes { rawBuffer in
-                guard let baseAddress = rawBuffer.baseAddress else { return }
-                texture.getBytes(baseAddress, bytesPerRow: bytesPerRow, from: region, mipmapLevel: 0)
-            }
-            
-            var rgba8Pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-            for i in stride(from: 0, to: bgra8Pixels.count, by: 4) {
-                rgba8Pixels[i] = bgra8Pixels[i + 2]
-                rgba8Pixels[i + 1] = bgra8Pixels[i + 1]
-                rgba8Pixels[i + 2] = bgra8Pixels[i]
-                rgba8Pixels[i + 3] = bgra8Pixels[i + 3]
-            }
-            return makeUIImageFromRGBA8(rgba8Pixels, width: width, height: height)
-            
-        default:
-            print("Unsupported texture pixel format for UIImage conversion: \(texture.pixelFormat.rawValue)")
-            return nil
-        }
-    }
     
-    private func clampToUInt8(_ value: Float) -> UInt8 {
-        UInt8(max(0.0, min(1.0, value)) * 255.0)
-    }
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
     
-    private func makeUIImageFromRGBA8(_ rgba8Pixels: [UInt8], width: Int, height: Int) -> UIImage? {
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let provider = CGDataProvider(data: Data(rgba8Pixels) as CFData),
-              let cgImage = CGImage(
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bitsPerPixel: 32,
-                bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider,
-                decode: nil,
-                shouldInterpolate: false,
-                intent: .defaultIntent
-              ) else {
-            return nil
+    func draw(in view: MTKView) {
+        guard let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
+        else {
+            return
         }
         
-        return UIImage(cgImage: cgImage)
+        if let outputTexture = outputTexture {
+            renderEncoder.setRenderPipelineState(displayPipeline)
+            renderEncoder.setVertexBuffer(displayVertexBuffer, offset: 0, index: 0)
+            renderEncoder.setFragmentTexture(outputTexture, index: 0)
+            renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        renderEncoder.endEncoding()
+        
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
 }
