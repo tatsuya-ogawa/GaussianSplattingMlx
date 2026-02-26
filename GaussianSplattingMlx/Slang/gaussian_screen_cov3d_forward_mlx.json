@@ -1,0 +1,47 @@
+{
+  "metal": "build/slang_screen_space/gaussian_screen_cov3d_forward.metal",
+  "entry": "gaussian_screen_cov3d_forward",
+  "kernel_name": "gaussian_screen_cov3d_forward_slang_v1",
+  "kernel_var": "gaussian_screen_cov3d_forwardKernel",
+  "input_names": [
+    "cov3d_scales_1",
+    "cov3d_rotations_1",
+    "cov3d_counts_1"
+  ],
+  "output_names": [
+    "cov3d_outCov3d_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= cov3d_counts_1[int(0)])\n{\n    return;\n}\n\nuint scaleBase_0 = p_0 * 3U;\nfloat sx_0 = cov3d_scales_1[scaleBase_0];\nfloat sy_0 = cov3d_scales_1[scaleBase_0 + 1U];\nfloat sz_0 = cov3d_scales_1[scaleBase_0 + 2U];\n\nuint rotBase_0 = p_0 * 4U;\nfloat rw_0 = cov3d_rotations_1[rotBase_0];\nfloat rx_0 = cov3d_rotations_1[rotBase_0 + 1U];\nfloat ry_0 = cov3d_rotations_1[rotBase_0 + 2U];\nfloat rz_0 = cov3d_rotations_1[rotBase_0 + 3U];\n\nfloat _S1 = max(sqrt(rw_0 * rw_0 + rx_0 * rx_0 + ry_0 * ry_0 + rz_0 * rz_0), 9.99999993922529029e-09);\nfloat w_0 = rw_0 / _S1;\nfloat x_0 = rx_0 / _S1;\nfloat y_0 = ry_0 / _S1;\nfloat z_0 = rz_0 / _S1;\n\nfloat _S2 = y_0 * y_0;\nfloat _S3 = z_0 * z_0;\nfloat _S4 = x_0 * y_0;\nfloat _S5 = w_0 * z_0;\nfloat _S6 = x_0 * z_0;\nfloat _S7 = w_0 * y_0;\n\nfloat _S8 = x_0 * x_0;\nfloat _S9 = y_0 * z_0;\nfloat _S10 = w_0 * x_0;\nfloat l00_0 = (1.0 - 2.0 * (_S2 + _S3)) * sx_0;\nfloat l01_0 = 2.0 * (_S4 - _S5) * sy_0;\nfloat l02_0 = 2.0 * (_S6 + _S7) * sz_0;\nfloat l10_0 = 2.0 * (_S4 + _S5) * sx_0;\nfloat l11_0 = (1.0 - 2.0 * (_S8 + _S3)) * sy_0;\nfloat l12_0 = 2.0 * (_S9 - _S10) * sz_0;\nfloat l20_0 = 2.0 * (_S6 - _S7) * sx_0;\nfloat l21_0 = 2.0 * (_S9 + _S10) * sy_0;\nfloat l22_0 = (1.0 - 2.0 * (_S8 + _S2)) * sz_0;\n\nuint outBase_0 = p_0 * 9U;\n*(cov3d_outCov3d_1+outBase_0) = l00_0 * l00_0 + l01_0 * l01_0 + l02_0 * l02_0;\n*(cov3d_outCov3d_1+(outBase_0 + 1U)) = l00_0 * l10_0 + l01_0 * l11_0 + l02_0 * l12_0;\n*(cov3d_outCov3d_1+(outBase_0 + 2U)) = l00_0 * l20_0 + l01_0 * l21_0 + l02_0 * l22_0;\n*(cov3d_outCov3d_1+(outBase_0 + 3U)) = l10_0 * l00_0 + l11_0 * l01_0 + l12_0 * l02_0;\n*(cov3d_outCov3d_1+(outBase_0 + 4U)) = l10_0 * l10_0 + l11_0 * l11_0 + l12_0 * l12_0;\n*(cov3d_outCov3d_1+(outBase_0 + 5U)) = l10_0 * l20_0 + l11_0 * l21_0 + l12_0 * l22_0;\n*(cov3d_outCov3d_1+(outBase_0 + 6U)) = l20_0 * l00_0 + l21_0 * l01_0 + l22_0 * l02_0;\n*(cov3d_outCov3d_1+(outBase_0 + 7U)) = l20_0 * l10_0 + l21_0 * l11_0 + l22_0 * l12_0;\n*(cov3d_outCov3d_1+(outBase_0 + 8U)) = l20_0 * l20_0 + l21_0 * l21_0 + l22_0 * l22_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "cov3d_scales_1",
+      "buffer_index": 20,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "cov3d_rotations_1",
+      "buffer_index": 21,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "cov3d_counts_1",
+      "buffer_index": 23,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "cov3d_outCov3d_1",
+      "buffer_index": 24,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_screen_space/gaussian_screen_cov3d_forward_mlx.swift"
+}

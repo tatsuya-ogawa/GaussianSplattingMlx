@@ -7,7 +7,6 @@ struct SlangKernelSpec: Decodable {
     let outputNames: [String]
     let source: String
     let header: String
-    let atomicOutputs: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case kernelName = "kernel_name"
@@ -15,7 +14,6 @@ struct SlangKernelSpec: Decodable {
         case outputNames = "output_names"
         case source
         case header
-        case atomicOutputs = "atomic_outputs"
     }
 }
 
@@ -45,8 +43,7 @@ enum SlangKernelSpecLoader {
             inputNames: spec.inputNames,
             outputNames: spec.outputNames,
             source: spec.source,
-            header: spec.header,
-            atomicOutputs: spec.atomicOutputs ?? false
+            header: spec.header
         )
     }
 

@@ -7,12 +7,15 @@
 
 class Logger {
     static let shared: Logger = Logger()
-    private init() {
-
+    let isDebug: Bool
+    private init(isDebug:Bool=false) {
+        self.isDebug = isDebug
     }
     func debug(_ message: @autoclosure () -> String) {
         #if DEBUG
+        if self.isDebug{
             print(message())
+        }
         #endif
     }
     func info(_ message: String) {

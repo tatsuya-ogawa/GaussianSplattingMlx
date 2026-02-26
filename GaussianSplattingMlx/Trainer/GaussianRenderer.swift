@@ -112,12 +112,28 @@ struct TILE_SIZE_H_W {
     let w: Int
     let h: Int
 }
+
+private struct TileEntry {
+    let h: Int
+    let w: Int
+    let size: TILE_SIZE_H_W
+    let tileCoord: MLXArray
+}
+
 class GaussianRenderer {
     private enum ScreenSpaceCustomOutputIndex {
         static let means2d = 0
         static let cov2d = 1
         static let color = 2
         static let conic = 3
+    }
+    
+    private enum PackedGaussianIndex {
+        static let means2d = 0..<2
+        static let conic = 2..<6
+        static let color = 6..<9
+        static let opacity = 9..<10
+        static let depth = 10
     }
 
     private static let fusedTileCustomMinGaussianCount = 9
@@ -132,6 +148,7 @@ class GaussianRenderer {
     let TILE_SIZE: TILE_SIZE_H_W
     let useFusedTileCustomOp: Bool
     let useScreenSpaceCustomOp: Bool
+    private let tileEntries: [TileEntry]
 
     private static func padFirstDimToAtLeast(_ value: MLXArray, count: Int) -> MLXArray {
         let currentCount = value.shape[0]
@@ -146,6 +163,22 @@ class GaussianRenderer {
     private static func sliceFirstDim(_ value: MLXArray, count: Int) -> MLXArray {
         guard count < value.shape[0] else { return value }
         return value[0..<count]
+    }
+    
+    private func buildPackedGaussians(
+        means2d: MLXArray,
+        conic: MLXArray,
+        color: MLXArray,
+        opacity: MLXArray,
+        depths: MLXArray
+    ) -> MLXArray {
+        let conicFlat = conic.reshaped([-1, 4])
+        let opacityColumn = opacity.reshaped([-1, 1])
+        let depthColumn = depths.reshaped([-1, 1])
+        return MLX.concatenated(
+            [means2d, conicFlat, color, opacityColumn, depthColumn],
+            axis: 1
+        )
     }
 
     private lazy var fusedTileCompositeCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -300,6 +333,76 @@ class GaussianRenderer {
             ]
         )
         return (outputs[0], outputs[1], outputs[2])
+    }
+
+    private lazy var covariance3DCustomFunction: (([MLXArray]) -> [MLXArray])? = {
+        guard useScreenSpaceCustomOp else {
+            return nil
+        }
+        guard
+            let forwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_cov3d_forward_mlx"),
+            let backwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_screen_cov3d_backward_mlx")
+        else {
+            Logger.shared.debug("Slang cov3d kernels are unavailable. Fallback path is used.")
+            return nil
+        }
+
+        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
+            let scales = inputs[0]
+            let rotations = inputs[1]
+            let activeCount = scales.shape[0]
+            let paddedCount = Swift.max(activeCount, 1)
+            let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+            let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+            let pointCounts = MLXArray([UInt32(paddedCount)])
+
+            let cov3dPadded = forwardKernel(
+                [scalesPadded, rotationsPadded, pointCounts],
+                grid: (max(paddedCount, 1), 1, 1),
+                threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                outputShapes: [[paddedCount, 3, 3]],
+                outputDTypes: [scales.dtype]
+            )[0]
+            return [Self.sliceFirstDim(cov3dPadded, count: activeCount)]
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let scales = primals[0]
+                let rotations = primals[1]
+                let cotCov3d = cotangents[0]
+
+                let activeCount = scales.shape[0]
+                let paddedCount = Swift.max(activeCount, 1)
+                let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
+                let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
+                let cotCov3dPadded = Self.padFirstDimToAtLeast(cotCov3d, count: paddedCount)
+                let pointCounts = MLXArray([UInt32(paddedCount)])
+
+                let grads = backwardKernel(
+                    [scalesPadded, rotationsPadded, cotCov3dPadded, pointCounts],
+                    grid: (max(paddedCount, 1), 1, 1),
+                    threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
+                    outputShapes: [scalesPadded.shape, rotationsPadded.shape],
+                    outputDTypes: [scales.dtype, rotations.dtype]
+                )
+
+                return [
+                    Self.sliceFirstDim(grads[0], count: activeCount),
+                    Self.sliceFirstDim(grads[1], count: activeCount),
+                ]
+            }
+        }
+    }()
+
+    private func buildCovariance3d(scales: MLXArray, rotations: MLXArray) -> MLXArray {
+        if let covariance3DCustomFunction {
+            return covariance3DCustomFunction([scales, rotations])[0]
+        }
+        return build_covariance_3d(s: scales, r: rotations)
     }
 
     private lazy var screenSpaceCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -503,32 +606,65 @@ class GaussianRenderer {
     }()
 
     private func buildScreenSpaceFallback(
+        meanNdc: MLXArray,
+        means3d: MLXArray,
+        shs: MLXArray,
+        cov3d: MLXArray,
+        cameraCenter: MLXArray,
+        viewMatrix: MLXArray,
+        fovX: MLXArray,
+        fovY: MLXArray,
+        focalX: MLXArray,
+        focalY: MLXArray,
+        imageWidth: MLXArray,
+        imageHeight: MLXArray
+    ) -> [MLXArray] {
+        let color = build_color(
+            means3d: means3d,
+            shs: shs,
+            cameraCenter: cameraCenter,
+            activeShDegree: self.active_sh_degree
+        )
+        let cov2d = build_covariance_2d(
+            mean3d: means3d,
+            cov3d: cov3d,
+            viewMatrix: viewMatrix,
+            fovX: fovX,
+            fovY: fovY,
+            focalX: focalX,
+            focalY: focalY
+        )
+        let meanCoordX = ((meanNdc[.ellipsis, 0] + 1) * imageWidth - 1.0) * 0.5
+        let meanCoordY = ((meanNdc[.ellipsis, 1] + 1) * imageHeight - 1.0) * 0.5
+        let means2d = MLX.stacked([meanCoordX, meanCoordY], axis: -1)
+        let conic = matrixInverse2d(cov2d)
+        return [means2d, cov2d, color, conic]
+    }
+
+    private func buildScreenSpaceFallback(
         camera: Camera,
         meanNdc: MLXArray,
         means3d: MLXArray,
         shs: MLXArray,
         cov3d: MLXArray
     ) -> [MLXArray] {
-        let color = build_color(
+        let cameraCenter = MLXArray(
+            [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
+                as [Float])[.newAxis, .ellipsis]
+        return buildScreenSpaceFallback(
+            meanNdc: meanNdc,
             means3d: means3d,
             shs: shs,
-            camera: camera,
-            activeShDegree: self.active_sh_degree
-        )
-        let cov2d = build_covariance_2d(
-            mean3d: means3d,
             cov3d: cov3d,
+            cameraCenter: cameraCenter,
             viewMatrix: camera.worldViewTransform,
             fovX: camera.FoVx,
             fovY: camera.FoVy,
             focalX: camera.focalX,
-            focalY: camera.focalY
+            focalY: camera.focalY,
+            imageWidth: MLXArray(Float(camera.imageWidth)),
+            imageHeight: MLXArray(Float(camera.imageHeight))
         )
-        let meanCoordX = ((meanNdc[.ellipsis, 0] + 1) * camera.imageWidth - 1.0) * 0.5
-        let meanCoordY = ((meanNdc[.ellipsis, 1] + 1) * camera.imageHeight - 1.0) * 0.5
-        let means2d = MLX.stacked([meanCoordX, meanCoordY], axis: -1)
-        let conic = matrixInverse2d(cov2d)
-        return [means2d, cov2d, color, conic]
     }
 
     init(
@@ -549,29 +685,59 @@ class GaussianRenderer {
         self.W = W
         self.H = H
         self.pix_coord = createMeshGrid(shape: [H, W])
+        self.tileEntries = Self.makeTileEntries(
+            width: W,
+            height: H,
+            tileSize: TILE_SIZE,
+            pixCoord: self.pix_coord
+        )
         if useFusedTileCustomOp {
             _ = fusedTileCompositeCustomFunction
         }
     }
 
-    func renderTile(
-        h: Int,
-        w: Int,
+    private static func makeTileEntries(
+        width: Int,
+        height: Int,
         tileSize: TILE_SIZE_H_W,
-        means2d: MLXArray,
-        cov2d: MLXArray,
-        color: MLXArray,
-        opacity: MLXArray,
-        depths: MLXArray,
-        conic: MLXArray? = nil,
+        pixCoord: MLXArray
+    ) -> [TileEntry] {
+        var entries: [TileEntry] = []
+        for h in stride(from: 0, to: height, by: tileSize.h) {
+            for w in stride(from: 0, to: width, by: tileSize.w) {
+                let tileSizeRest = TILE_SIZE_H_W(
+                    w: Swift.min(width - w, tileSize.w),
+                    h: Swift.min(height - h, tileSize.h)
+                )
+                let tileCoord = MLX.stopGradient(
+                    pixCoord[
+                        .stride(from: h, to: h + tileSizeRest.h),
+                        .stride(from: w, to: w + tileSizeRest.w)
+                    ].flattened(start: 0, end: -2)
+                ).asType(.float32)
+                entries.append(
+                    TileEntry(
+                        h: h,
+                        w: w,
+                        size: tileSizeRest,
+                        tileCoord: tileCoord
+                    )
+                )
+            }
+        }
+        return entries
+    }
+
+    private func renderTile(
+        tile: TileEntry,
+        packedGaussians: MLXArray,
         inputIsDepthSorted: Bool = false,
         rect: (MLXArray, MLXArray),
         skipThreshold: Int = 0
     ) -> (MLXArray, MLXArray, MLXArray) {
-        let tileSizeRest = TILE_SIZE_H_W(
-            w: Swift.min(self.W - w, tileSize.w),
-            h: Swift.min(self.H - h, tileSize.h)
-        )
+        let h = tile.h
+        let w = tile.w
+        let tileSizeRest = tile.size
         Logger.shared.debug("computeTileMask")
         let in_mask_condition = computeTileMask(
             h: h,
@@ -590,51 +756,53 @@ class GaussianRenderer {
                 MLXArray.zeros([tileSizeRest.h, tileSizeRest.w, 1])
             )
         }
-        let tile_coord = MLX.stopGradient(
-            self.pix_coord[
-                .stride(from: h, to: h + tileSizeRest.h),
-                .stride(from: w, to: w + tileSizeRest.w)
-            ].flattened(start: 0, end: -2)
-        )
-        Logger.shared.debug("getSortedValues")
-        let sortedValues = getSortedValues(
-            means2d: means2d,
-            cov2d: cov2d,
-            color: color,
-            opacity: opacity,
-            depths: depths,
-            conic: conic,
-            in_mask: in_mask,
-            inputIsDepthSorted: inputIsDepthSorted
-        )
+        let tile_coord = tile.tileCoord
+        let maskedPacked = packedGaussians[in_mask]
+        let sortedPacked: MLXArray
+        if inputIsDepthSorted {
+            sortedPacked = maskedPacked
+        } else {
+            let depthSortIndices = MLX.stopGradient(
+                MLX.argSort(
+                    maskedPacked[.ellipsis, PackedGaussianIndex.depth]
+                )
+            )
+            sortedPacked = maskedPacked[depthSortIndices]
+        }
+        
+        let sortedMeans2d = sortedPacked[.ellipsis, PackedGaussianIndex.means2d]
+        let sortedConic = sortedPacked[.ellipsis, PackedGaussianIndex.conic].reshaped([-1, 2, 2])
+        let sortedColor = sortedPacked[.ellipsis, PackedGaussianIndex.color]
+        let sortedOpacity = sortedPacked[.ellipsis, PackedGaussianIndex.opacity]
+        let sortedDepths = sortedPacked[.ellipsis, PackedGaussianIndex.depth]
 
         let tile_color: MLXArray
         let tile_depth: MLXArray
         let acc_alpha: MLXArray
         if useFusedTileCustomOp {
-            let activeGaussianCount = sortedValues.depths.shape[0]
+            let activeGaussianCount = sortedDepths.shape[0]
             let sortedDepthsPadded = Self.padFirstDimToAtLeast(
-                sortedValues.depths,
+                sortedDepths,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedMeans2dPadded = Self.padFirstDimToAtLeast(
-                sortedValues.means2d,
+                sortedMeans2d,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedConicPadded = Self.padFirstDimToAtLeast(
-                sortedValues.conic,
+                sortedConic,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedOpacityPadded = Self.padFirstDimToAtLeast(
-                sortedValues.opacity,
+                sortedOpacity,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedColorPadded = Self.padFirstDimToAtLeast(
-                sortedValues.color,
+                sortedColor,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             if let blended = renderTileCompositeCustomOp(
-                tileCoord: tile_coord.asType(.float32),
+                tileCoord: tile_coord,
                 sortedDepths: sortedDepthsPadded,
                 sortedMeans2d: sortedMeans2dPadded,
                 sortedConic: sortedConicPadded,
@@ -649,13 +817,13 @@ class GaussianRenderer {
                 Logger.shared.debug("tile custom kernel unavailable. fallback path is used.")
                 let gauss_weight = computeGaussianWeights(
                     tile_coord: tile_coord,
-                    sorted_means2d: sortedValues.means2d,
-                    sorted_conic: sortedValues.conic
+                    sorted_means2d: sortedMeans2d,
+                    sorted_conic: sortedConic
                 )
                 let alpha =
                     gauss_weight[.ellipsis, .newAxis]
                     * MLX.clip(
-                        sortedValues.opacity[.newAxis],
+                        sortedOpacity[.newAxis],
                         max: 0.99
                     )
                 let beforeT = MLX.concatenated(
@@ -668,12 +836,12 @@ class GaussianRenderer {
                 let T = beforeT.cumprod(axis: 1)
                 let acc_alphaFallback = (alpha * T).sum(axis: 1)
                 tile_color =
-                    (T * alpha * sortedValues.color[.newAxis]).sum(
+                    (T * alpha * sortedColor[.newAxis]).sum(
                         axis: 1
                     ) + (1 - acc_alphaFallback) * (self.whiteBackground ? 1 : 0)
                 tile_depth =
                     ((T * alpha)
-                    * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+                    * sortedDepths.expandedDimensions(axes: [0, -1])).sum(
                         axis: 1
                     )
                 acc_alpha = acc_alphaFallback
@@ -682,14 +850,14 @@ class GaussianRenderer {
             Logger.shared.debug("computeGaussianWeights")
             let gauss_weight = computeGaussianWeights(
                 tile_coord: tile_coord,
-                sorted_means2d: sortedValues.means2d,
-                sorted_conic: sortedValues.conic
+                sorted_means2d: sortedMeans2d,
+                sorted_conic: sortedConic
             )
             Logger.shared.debug("renderTile alpha")
             let alpha =
                 gauss_weight[.ellipsis, .newAxis]
                 * MLX.clip(
-                    sortedValues.opacity[.newAxis],
+                    sortedOpacity[.newAxis],
                     max: 0.99
                 )
             Logger.shared.debug("renderTile T")
@@ -707,14 +875,14 @@ class GaussianRenderer {
 
             Logger.shared.debug("renderTile tile_color")
             tile_color =
-                (T * alpha * sortedValues.color[.newAxis]).sum(
+                (T * alpha * sortedColor[.newAxis]).sum(
                     axis: 1
                 ) + (1 - acc_alphaFallback) * (self.whiteBackground ? 1 : 0)
 
             Logger.shared.debug("renderTile tile_depth")
             tile_depth =
                 ((T * alpha)
-                * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+                * sortedDepths.expandedDimensions(axes: [0, -1])).sum(
                     axis: 1
                 )
             acc_alpha = acc_alphaFallback
@@ -742,54 +910,177 @@ class GaussianRenderer {
         visiility_filter: MLXArray,
         radii: MLXArray
     ) {
+        return render(
+            imageWidth: camera.imageWidth,
+            imageHeight: camera.imageHeight,
+            means2d: means2d,
+            cov2d: cov2d,
+            color: color,
+            opacity: opacity,
+            depths: depths,
+            conic: conic,
+            inputIsDepthSorted: inputIsDepthSorted
+        )
+    }
+
+    func render(
+        imageWidth: Int,
+        imageHeight: Int,
+        means2d: MLXArray,
+        cov2d: MLXArray,
+        color: MLXArray,
+        opacity: MLXArray,
+        depths: MLXArray,
+        conic: MLXArray? = nil,
+        inputIsDepthSorted: Bool = false
+    ) -> (
+        render: MLXArray,
+        depth: MLXArray,
+        alpha: MLXArray,
+        visiility_filter: MLXArray,
+        radii: MLXArray
+    ) {
+        precondition(
+            imageWidth == self.W && imageHeight == self.H,
+            "Renderer image size mismatch: expected (\(self.W), \(self.H)), got (\(imageWidth), \(imageHeight))"
+        )
         Logger.shared.debug("get_radius")
         let radii = get_radius(cov2d: cov2d)
         Logger.shared.debug("get_rect")
         let rect = get_rect(
             pix_coord: means2d,
             radii: radii,
-            width: camera.imageWidth,
-            height: camera.imageHeight
+            width: imageWidth,
+            height: imageHeight
+        )
+        let conicValues = conic ?? matrixInverse2d(cov2d)
+        let packedGaussians = buildPackedGaussians(
+            means2d: means2d,
+            conic: conicValues,
+            color: color,
+            opacity: opacity,
+            depths: depths
         )
 
         let render_color = MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
         let render_depth = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
         let render_alpha = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
-        for h in stride(from: 0, to: camera.imageHeight, by: TILE_SIZE.h) {
-            for w in stride(from: 0, to: camera.imageWidth, by: TILE_SIZE.w) {
-                Logger.shared.debug("before renderTile")
-                let (tile_color, tile_depth, acc_alpha) = renderTile(
-                    h: h,
-                    w: w,
-                    tileSize: TILE_SIZE,
-                    means2d: means2d,
-                    cov2d: cov2d,
-                    color: color,
-                    opacity: opacity,
-                    depths: depths,
-                    conic: conic,
-                    inputIsDepthSorted: inputIsDepthSorted,
-                    rect: rect
-                )
-                Logger.shared.debug("after renderTile")
-                Logger.shared.debug("before assign")
-                render_color[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = tile_color
-                render_depth[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = tile_depth
-                render_alpha[
-                    .stride(from: h, to: h + TILE_SIZE.h),
-                    .stride(from: w, to: w + TILE_SIZE.w)
-                ] = acc_alpha
-                Logger.shared.debug("after assign")
-            }
+        for tile in tileEntries {
+            Logger.shared.debug("before renderTile")
+            let (tile_color, tile_depth, acc_alpha) = renderTile(
+                tile: tile,
+                packedGaussians: packedGaussians,
+                inputIsDepthSorted: inputIsDepthSorted,
+                rect: rect
+            )
+            Logger.shared.debug("after renderTile")
+            Logger.shared.debug("before assign")
+            render_color[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = tile_color
+            render_depth[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = tile_depth
+            render_alpha[
+                .stride(from: tile.h, to: tile.h + tile.size.h),
+                .stride(from: tile.w, to: tile.w + tile.size.w)
+            ] = acc_alpha
+            Logger.shared.debug("after assign")
         }
 
         return (render_color, render_depth, render_alpha, radii .> 0, radii)
+    }
+
+    func forwardWithCameraParams(
+        viewMatrix: MLXArray,
+        projMatrix: MLXArray,
+        cameraCenter: MLXArray,
+        fovX: MLXArray,
+        fovY: MLXArray,
+        focalX: MLXArray,
+        focalY: MLXArray,
+        imageWidth: Int,
+        imageHeight: Int,
+        means3d: MLXArray,
+        shs: MLXArray,
+        opacity: MLXArray,
+        scales: MLXArray,
+        rotations: MLXArray
+    ) -> (
+        render: MLXArray,
+        depth: MLXArray,
+        alpha: MLXArray,
+        visiility_filter: MLXArray,
+        radii: MLXArray
+    ) {
+        Logger.shared.debug("projection_ndc")
+        var (mean_ndc, mean_view, in_mask) = projection_ndc(
+            points: means3d,
+            viewMatrix: viewMatrix,
+            projMatrix: projMatrix
+        )
+        mean_ndc = mean_ndc[in_mask]
+        mean_view = mean_view[in_mask]
+        let depthsUnsorted = mean_view[0..., 2]
+        let depthSortIndices = MLX.stopGradient(MLX.argSort(depthsUnsorted))
+        let depths = depthsUnsorted[depthSortIndices]
+        mean_ndc = mean_ndc[depthSortIndices]
+        let means3d = means3d[in_mask][depthSortIndices]
+        let shs = shs[in_mask][depthSortIndices]
+        let opacity = opacity[in_mask][depthSortIndices]
+        let scales = scales[in_mask][depthSortIndices]
+        let rotations = rotations[in_mask][depthSortIndices]
+        Logger.shared.debug("build_covariance_3d")
+        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
+        let imageWidthArray = MLXArray(Float(imageWidth))
+        let imageHeightArray = MLXArray(Float(imageHeight))
+
+        let screenSpace: [MLXArray]
+        if let screenSpaceCustomFunction {
+            Logger.shared.debug("build_screen_space_custom")
+            screenSpace = screenSpaceCustomFunction(
+                [
+                    mean_ndc, means3d, shs, cov3d, cameraCenter, viewMatrix,
+                    fovX, fovY, focalX, focalY, imageWidthArray, imageHeightArray,
+                ]
+            )
+        } else {
+            Logger.shared.debug("build_screen_space_fallback")
+            screenSpace = buildScreenSpaceFallback(
+                meanNdc: mean_ndc,
+                means3d: means3d,
+                shs: shs,
+                cov3d: cov3d,
+                cameraCenter: cameraCenter,
+                viewMatrix: viewMatrix,
+                fovX: fovX,
+                fovY: fovY,
+                focalX: focalX,
+                focalY: focalY,
+                imageWidth: imageWidthArray,
+                imageHeight: imageHeightArray
+            )
+        }
+
+        let means2d = screenSpace[ScreenSpaceCustomOutputIndex.means2d]
+        let cov2d = screenSpace[ScreenSpaceCustomOutputIndex.cov2d]
+        let color = screenSpace[ScreenSpaceCustomOutputIndex.color]
+        let conic = screenSpace[ScreenSpaceCustomOutputIndex.conic]
+        Logger.shared.debug("render")
+        let rets = render(
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            means2d: means2d,
+            cov2d: cov2d,
+            color: color,
+            opacity: opacity,
+            depths: depths,
+            conic: conic,
+            inputIsDepthSorted: true
+        )
+        return rets
     }
 
     func forward(
@@ -824,7 +1115,7 @@ class GaussianRenderer {
         let scales = scales[in_mask][depthSortIndices]
         let rotations = rotations[in_mask][depthSortIndices]
         Logger.shared.debug("build_covariance_3d")
-        let cov3d = build_covariance_3d(s: scales, r: rotations)
+        let cov3d = buildCovariance3d(scales: scales, rotations: rotations)
         let cameraCenter = MLXArray(
             [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
                 as [Float])[.newAxis, .ellipsis]
