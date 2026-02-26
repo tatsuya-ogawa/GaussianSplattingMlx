@@ -666,6 +666,7 @@ class GaussianTrainer {
                 trainDepth: trainDepth
             )
             let (loss, grads) = trainWithGrad(trainInputs)
+            eval(loss[0], grads)
             let lossValue = loss[0].item(Float.self)
             
             // Accumulate gradients for densification
