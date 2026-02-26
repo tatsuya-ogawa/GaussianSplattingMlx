@@ -127,6 +127,14 @@ class GaussianRenderer {
         static let color = 2
         static let conic = 3
     }
+    
+    private enum PackedGaussianIndex {
+        static let means2d = 0..<2
+        static let conic = 2..<6
+        static let color = 6..<9
+        static let opacity = 9..<10
+        static let depth = 10
+    }
 
     private static let fusedTileCustomMinGaussianCount = 9
     private static let screenSpaceCustomMinPointCount = 3
@@ -155,6 +163,22 @@ class GaussianRenderer {
     private static func sliceFirstDim(_ value: MLXArray, count: Int) -> MLXArray {
         guard count < value.shape[0] else { return value }
         return value[0..<count]
+    }
+    
+    private func buildPackedGaussians(
+        means2d: MLXArray,
+        conic: MLXArray,
+        color: MLXArray,
+        opacity: MLXArray,
+        depths: MLXArray
+    ) -> MLXArray {
+        let conicFlat = conic.reshaped([-1, 4])
+        let opacityColumn = opacity.reshaped([-1, 1])
+        let depthColumn = depths.reshaped([-1, 1])
+        return MLX.concatenated(
+            [means2d, conicFlat, color, opacityColumn, depthColumn],
+            axis: 1
+        )
     }
 
     private lazy var fusedTileCompositeCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -603,12 +627,7 @@ class GaussianRenderer {
 
     private func renderTile(
         tile: TileEntry,
-        means2d: MLXArray,
-        cov2d: MLXArray,
-        color: MLXArray,
-        opacity: MLXArray,
-        depths: MLXArray,
-        conic: MLXArray? = nil,
+        packedGaussians: MLXArray,
         inputIsDepthSorted: Bool = false,
         rect: (MLXArray, MLXArray),
         skipThreshold: Int = 0
@@ -635,41 +654,48 @@ class GaussianRenderer {
             )
         }
         let tile_coord = tile.tileCoord
-        Logger.shared.debug("getSortedValues")
-        let sortedValues = getSortedValues(
-            means2d: means2d,
-            cov2d: cov2d,
-            color: color,
-            opacity: opacity,
-            depths: depths,
-            conic: conic,
-            in_mask: in_mask,
-            inputIsDepthSorted: inputIsDepthSorted
-        )
+        let maskedPacked = packedGaussians[in_mask]
+        let sortedPacked: MLXArray
+        if inputIsDepthSorted {
+            sortedPacked = maskedPacked
+        } else {
+            let depthSortIndices = MLX.stopGradient(
+                MLX.argSort(
+                    maskedPacked[.ellipsis, PackedGaussianIndex.depth]
+                )
+            )
+            sortedPacked = maskedPacked[depthSortIndices]
+        }
+        
+        let sortedMeans2d = sortedPacked[.ellipsis, PackedGaussianIndex.means2d]
+        let sortedConic = sortedPacked[.ellipsis, PackedGaussianIndex.conic].reshaped([-1, 2, 2])
+        let sortedColor = sortedPacked[.ellipsis, PackedGaussianIndex.color]
+        let sortedOpacity = sortedPacked[.ellipsis, PackedGaussianIndex.opacity]
+        let sortedDepths = sortedPacked[.ellipsis, PackedGaussianIndex.depth]
 
         let tile_color: MLXArray
         let tile_depth: MLXArray
         let acc_alpha: MLXArray
         if useFusedTileCustomOp {
-            let activeGaussianCount = sortedValues.depths.shape[0]
+            let activeGaussianCount = sortedDepths.shape[0]
             let sortedDepthsPadded = Self.padFirstDimToAtLeast(
-                sortedValues.depths,
+                sortedDepths,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedMeans2dPadded = Self.padFirstDimToAtLeast(
-                sortedValues.means2d,
+                sortedMeans2d,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedConicPadded = Self.padFirstDimToAtLeast(
-                sortedValues.conic,
+                sortedConic,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedOpacityPadded = Self.padFirstDimToAtLeast(
-                sortedValues.opacity,
+                sortedOpacity,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             let sortedColorPadded = Self.padFirstDimToAtLeast(
-                sortedValues.color,
+                sortedColor,
                 count: Self.fusedTileCustomMinGaussianCount
             )
             if let blended = renderTileCompositeCustomOp(
@@ -688,13 +714,13 @@ class GaussianRenderer {
                 Logger.shared.debug("tile custom kernel unavailable. fallback path is used.")
                 let gauss_weight = computeGaussianWeights(
                     tile_coord: tile_coord,
-                    sorted_means2d: sortedValues.means2d,
-                    sorted_conic: sortedValues.conic
+                    sorted_means2d: sortedMeans2d,
+                    sorted_conic: sortedConic
                 )
                 let alpha =
                     gauss_weight[.ellipsis, .newAxis]
                     * MLX.clip(
-                        sortedValues.opacity[.newAxis],
+                        sortedOpacity[.newAxis],
                         max: 0.99
                     )
                 let beforeT = MLX.concatenated(
@@ -707,12 +733,12 @@ class GaussianRenderer {
                 let T = beforeT.cumprod(axis: 1)
                 let acc_alphaFallback = (alpha * T).sum(axis: 1)
                 tile_color =
-                    (T * alpha * sortedValues.color[.newAxis]).sum(
+                    (T * alpha * sortedColor[.newAxis]).sum(
                         axis: 1
                     ) + (1 - acc_alphaFallback) * (self.whiteBackground ? 1 : 0)
                 tile_depth =
                     ((T * alpha)
-                    * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+                    * sortedDepths.expandedDimensions(axes: [0, -1])).sum(
                         axis: 1
                     )
                 acc_alpha = acc_alphaFallback
@@ -721,14 +747,14 @@ class GaussianRenderer {
             Logger.shared.debug("computeGaussianWeights")
             let gauss_weight = computeGaussianWeights(
                 tile_coord: tile_coord,
-                sorted_means2d: sortedValues.means2d,
-                sorted_conic: sortedValues.conic
+                sorted_means2d: sortedMeans2d,
+                sorted_conic: sortedConic
             )
             Logger.shared.debug("renderTile alpha")
             let alpha =
                 gauss_weight[.ellipsis, .newAxis]
                 * MLX.clip(
-                    sortedValues.opacity[.newAxis],
+                    sortedOpacity[.newAxis],
                     max: 0.99
                 )
             Logger.shared.debug("renderTile T")
@@ -746,14 +772,14 @@ class GaussianRenderer {
 
             Logger.shared.debug("renderTile tile_color")
             tile_color =
-                (T * alpha * sortedValues.color[.newAxis]).sum(
+                (T * alpha * sortedColor[.newAxis]).sum(
                     axis: 1
                 ) + (1 - acc_alphaFallback) * (self.whiteBackground ? 1 : 0)
 
             Logger.shared.debug("renderTile tile_depth")
             tile_depth =
                 ((T * alpha)
-                * sortedValues.depths.expandedDimensions(axes: [0, -1])).sum(
+                * sortedDepths.expandedDimensions(axes: [0, -1])).sum(
                     axis: 1
                 )
             acc_alpha = acc_alphaFallback
@@ -794,6 +820,14 @@ class GaussianRenderer {
             width: camera.imageWidth,
             height: camera.imageHeight
         )
+        let conicValues = conic ?? matrixInverse2d(cov2d)
+        let packedGaussians = buildPackedGaussians(
+            means2d: means2d,
+            conic: conicValues,
+            color: color,
+            opacity: opacity,
+            depths: depths
+        )
 
         let render_color = MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
         let render_depth = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
@@ -802,12 +836,7 @@ class GaussianRenderer {
             Logger.shared.debug("before renderTile")
             let (tile_color, tile_depth, acc_alpha) = renderTile(
                 tile: tile,
-                means2d: means2d,
-                cov2d: cov2d,
-                color: color,
-                opacity: opacity,
-                depths: depths,
-                conic: conic,
+                packedGaussians: packedGaussians,
                 inputIsDepthSorted: inputIsDepthSorted,
                 rect: rect
             )
