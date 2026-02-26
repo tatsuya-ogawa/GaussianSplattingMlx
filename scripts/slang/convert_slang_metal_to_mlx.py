@@ -81,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep #line directives from Slang output.",
     )
+    parser.add_argument(
+        "--atomic-outputs",
+        action="store_true",
+        help="Set atomicOutputs: true in generated kernel metadata.",
+    )
     return parser.parse_args()
 
 
@@ -476,6 +481,7 @@ def generate_swift_snippet(
     output_names: list[str],
     header: str,
     source_body: str,
+    atomic_outputs: bool,
 ) -> str:
     source_literal = to_swift_multiline(source_body, indent="        ")
     lines = [
@@ -487,16 +493,20 @@ def generate_swift_snippet(
         f"    inputNames: {to_swift_array_literal(input_names)},",
         f"    outputNames: {to_swift_array_literal(output_names)},",
         "    source:",
-        source_literal + ("," if header.strip() else ""),
+        source_literal + ("," if header.strip() or atomic_outputs else ""),
     ]
     if header.strip():
         header_literal = to_swift_multiline(header, indent="        ")
+        if atomic_outputs:
+            header_literal += ","
         lines.extend(
             [
                 "    header:",
                 header_literal,
             ]
         )
+    if atomic_outputs:
+        lines.append("    atomicOutputs: true")
     lines.append(")")
     lines.append("")
     return "\n".join(lines)
@@ -581,6 +591,7 @@ def main() -> None:
         output_names=output_names,
         header=header_text,
         source_body=source_body,
+        atomic_outputs=bool(args.atomic_outputs),
     )
 
     swift_out = args.swift_out
@@ -600,6 +611,7 @@ def main() -> None:
         "header": header_text,
         "buffer_parameters": io_details,
         "attribute_aliases": aliases,
+        "atomic_outputs": bool(args.atomic_outputs),
         "line_directives_kept": bool(args.keep_line_directives),
         "swift_out": metadata_path(swift_out, project_root),
     }

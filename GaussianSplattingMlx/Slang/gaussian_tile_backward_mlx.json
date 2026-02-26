@@ -1,0 +1,123 @@
+{
+  "metal": "build/slang_tile_manual/gaussian_tile_backward_only.metal",
+  "entry": "gaussian_tile_backward",
+  "kernel_name": "gaussian_tile_backward_slang_v2",
+  "kernel_var": "gaussian_tile_backwardKernel",
+  "input_names": [
+    "tileCoord_1",
+    "sortedDepths_1",
+    "sortedMeans2d_1",
+    "sortedConic_1",
+    "sortedOpacity_1",
+    "sortedColor_1",
+    "cotColor_1",
+    "cotDepth_1",
+    "cotAlpha_1",
+    "counts_1"
+  ],
+  "output_names": [
+    "gradSortedDepths_1",
+    "gradSortedMeans2d_1",
+    "gradSortedConic_1",
+    "gradSortedOpacity_1",
+    "gradSortedColor_1"
+  ],
+  "source": "uint p = thread_position_in_grid.x;\nint pixelCount = int(counts_1[0]);\nif (int(p) >= pixelCount) {\n    return;\n}\nint gaussianCount = int(counts_1[1]);\nbool whiteBg = counts_1[2] != 0;\n\nfloat px = float(tileCoord_1[p * 2 + 0]);\nfloat py = float(tileCoord_1[p * 2 + 1]);\n\nfloat gColorX = cotColor_1[p * 3 + 0];\nfloat gColorY = cotColor_1[p * 3 + 1];\nfloat gColorZ = cotColor_1[p * 3 + 2];\nfloat gDepth = cotDepth_1[p];\nfloat gAlpha = cotAlpha_1[p];\nfloat bgCoeff = whiteBg ? -(gColorX + gColorY + gColorZ) : 0.0f;\n\nfloat weightedSum = 0.0f;\nfloat trans = 1.0f;\n\nfor (int i = 0; i < gaussianCount; ++i) {\n    float dx = px - sortedMeans2d_1[i * 2 + 0];\n    float dy = py - sortedMeans2d_1[i * 2 + 1];\n    uint conicBase = uint(i) * 4;\n    float exponent = -0.5f * (\n        dx * dx * sortedConic_1[conicBase + 0] +\n        dy * dy * sortedConic_1[conicBase + 3] +\n        dx * dy * sortedConic_1[conicBase + 1] +\n        dx * dy * sortedConic_1[conicBase + 2]\n    );\n    float raw = exp(exponent) * sortedOpacity_1[i];\n    float alpha = raw;\n    if (alpha > 0.99f) {\n        alpha = 0.99f;\n    }\n\n    float contrib = trans * alpha;\n    uint colorBase = uint(i) * 3;\n    float c = (\n        gColorX * sortedColor_1[colorBase + 0] +\n        gColorY * sortedColor_1[colorBase + 1] +\n        gColorZ * sortedColor_1[colorBase + 2]\n    ) + gDepth * sortedDepths_1[i] + gAlpha + bgCoeff;\n    weightedSum += c * contrib;\n\n    trans *= (1.0f - alpha);\n    if (trans < 1e-4f) {\n        break;\n    }\n}\n\ntrans = 1.0f;\nfloat prefixWeighted = 0.0f;\nfor (int i = 0; i < gaussianCount; ++i) {\n    float dx = px - sortedMeans2d_1[i * 2 + 0];\n    float dy = py - sortedMeans2d_1[i * 2 + 1];\n    uint conicBase = uint(i) * 4;\n    float c00 = sortedConic_1[conicBase + 0];\n    float c01 = sortedConic_1[conicBase + 1];\n    float c10 = sortedConic_1[conicBase + 2];\n    float c11 = sortedConic_1[conicBase + 3];\n    float exponent = -0.5f * (\n        dx * dx * c00 +\n        dy * dy * c11 +\n        dx * dy * c01 +\n        dx * dy * c10\n    );\n    float expVal = exp(exponent);\n    float raw = expVal * sortedOpacity_1[i];\n    float alpha = raw;\n    if (alpha > 0.99f) {\n        alpha = 0.99f;\n    }\n    float contrib = trans * alpha;\n    uint colorBase = uint(i) * 3;\n    float c = (\n        gColorX * sortedColor_1[colorBase + 0] +\n        gColorY * sortedColor_1[colorBase + 1] +\n        gColorZ * sortedColor_1[colorBase + 2]\n    ) + gDepth * sortedDepths_1[i] + gAlpha + bgCoeff;\n\n    float suffixWeighted = weightedSum - (prefixWeighted + c * contrib);\n    float denom = 1.0f - alpha;\n    if (denom < 1e-6f) {\n        denom = 1e-6f;\n    }\n    float gradAlpha = c * trans - suffixWeighted / denom;\n\n    atomic_fetch_add_explicit(\n        (device atomic_float*)(gradSortedDepths_1 + i),\n        gDepth * contrib,\n        memory_order_relaxed\n    );\n    atomic_fetch_add_explicit(\n        (device atomic_float*)(gradSortedColor_1 + colorBase + 0),\n        gColorX * contrib,\n        memory_order_relaxed\n    );\n    atomic_fetch_add_explicit(\n        (device atomic_float*)(gradSortedColor_1 + colorBase + 1),\n        gColorY * contrib,\n        memory_order_relaxed\n    );\n    atomic_fetch_add_explicit(\n        (device atomic_float*)(gradSortedColor_1 + colorBase + 2),\n        gColorZ * contrib,\n        memory_order_relaxed\n    );\n\n    if (raw <= 0.99f) {\n        float gradRaw = gradAlpha;\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedOpacity_1 + i),\n            gradRaw * expVal,\n            memory_order_relaxed\n        );\n\n        float gradExponent = gradRaw * raw;\n        float dxdy = dx * dy;\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedConic_1 + conicBase + 0),\n            gradExponent * (-0.5f * dx * dx),\n            memory_order_relaxed\n        );\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedConic_1 + conicBase + 1),\n            gradExponent * (-0.5f * dxdy),\n            memory_order_relaxed\n        );\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedConic_1 + conicBase + 2),\n            gradExponent * (-0.5f * dxdy),\n            memory_order_relaxed\n        );\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedConic_1 + conicBase + 3),\n            gradExponent * (-0.5f * dy * dy),\n            memory_order_relaxed\n        );\n\n        float c01sum = c01 + c10;\n        float gradDx = gradExponent * (-dx * c00 - 0.5f * dy * c01sum);\n        float gradDy = gradExponent * (-dy * c11 - 0.5f * dx * c01sum);\n\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedMeans2d_1 + i * 2 + 0),\n            -gradDx,\n            memory_order_relaxed\n        );\n        atomic_fetch_add_explicit(\n            (device atomic_float*)(gradSortedMeans2d_1 + i * 2 + 1),\n            -gradDy,\n            memory_order_relaxed\n        );\n    }\n\n    prefixWeighted += c * contrib;\n    trans *= (1.0f - alpha);\n    if (trans < 1e-4f) {\n        break;\n    }\n}",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;\n\n",
+  "buffer_parameters": [
+    {
+      "name": "tileCoord_1",
+      "buffer_index": 0,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "sortedDepths_1",
+      "buffer_index": 1,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "sortedMeans2d_1",
+      "buffer_index": 2,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "sortedConic_1",
+      "buffer_index": 3,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "sortedOpacity_1",
+      "buffer_index": 4,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "sortedColor_1",
+      "buffer_index": 5,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "cotColor_1",
+      "buffer_index": 6,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "cotDepth_1",
+      "buffer_index": 7,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "cotAlpha_1",
+      "buffer_index": 8,
+      "role": "input",
+      "type": "const device float*"
+    },
+    {
+      "name": "counts_1",
+      "buffer_index": 9,
+      "role": "input",
+      "type": "const device uint*"
+    },
+    {
+      "name": "gradSortedDepths_1",
+      "buffer_index": 10,
+      "role": "output",
+      "type": "device float*"
+    },
+    {
+      "name": "gradSortedMeans2d_1",
+      "buffer_index": 11,
+      "role": "output",
+      "type": "device float*"
+    },
+    {
+      "name": "gradSortedConic_1",
+      "buffer_index": 12,
+      "role": "output",
+      "type": "device float*"
+    },
+    {
+      "name": "gradSortedOpacity_1",
+      "buffer_index": 13,
+      "role": "output",
+      "type": "device float*"
+    },
+    {
+      "name": "gradSortedColor_1",
+      "buffer_index": 14,
+      "role": "output",
+      "type": "device float*"
+    }
+  ],
+  "attribute_aliases": [],
+  "atomic_outputs": true,
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_manual/gaussian_tile_backward_mlx.swift"
+}
