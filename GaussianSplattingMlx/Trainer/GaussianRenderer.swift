@@ -125,6 +125,7 @@ private struct GlobalTileSliceInfo {
     let packedTileIndices: MLXArray
     let tileCounts: MLXArray
     let maxTilePairs: Int
+    let renderCounts: MLXArray
 }
 
 class GaussianRenderer {
@@ -347,6 +348,347 @@ class GaussianRenderer {
         return (outputs[0], outputs[1], outputs[2])
     }
 
+    private lazy var globalTileCompositeCustomFunction: (([MLXArray]) -> [MLXArray])? = {
+        guard useFusedTileCustomOp else {
+            return nil
+        }
+
+        let forwardKernel = MLXFast.metalKernel(
+            name: "gaussian_tile_global_forward_v1",
+            inputNames: ["packedGaussians", "packedTileIndices", "tileCounts", "renderCounts"],
+            outputNames: ["outColor", "outDepth", "outAlpha"],
+            source: """
+                uint p = thread_position_in_grid.x;
+                uint pixelCount = renderCounts[0];
+                if (p >= pixelCount) {
+                    return;
+                }
+
+                uint maxTilePairs = renderCounts[1];
+                uint gridW = renderCounts[2];
+                uint tileW = renderCounts[3];
+                uint tileH = renderCounts[4];
+                uint imageW = renderCounts[5];
+                uint imageH = renderCounts[6];
+                uint whiteBg = renderCounts[7];
+
+                uint y = p / imageW;
+                uint x = p - y * imageW;
+                if (y >= imageH) {
+                    return;
+                }
+
+                uint tileX = x / tileW;
+                uint tileY = y / tileH;
+                uint tileIndex = tileY * gridW + tileX;
+                if (tileIndex >= tileCounts_shape[0]) {
+                    return;
+                }
+
+                uint count = tileCounts[tileIndex];
+                uint base = tileIndex * maxTilePairs;
+
+                float px = float(x);
+                float py = float(y);
+                float T = 1.0;
+                float accAlpha = 0.0;
+                float accumColorX = 0.0;
+                float accumColorY = 0.0;
+                float accumColorZ = 0.0;
+                float accumDepth = 0.0;
+
+                for (uint i = 0; i < count; ++i) {
+                    uint gi = uint(packedTileIndices[base + i]);
+                    uint gBase = gi * 11u;
+
+                    float meanX = packedGaussians[gBase + 0u];
+                    float meanY = packedGaussians[gBase + 1u];
+                    float c00 = packedGaussians[gBase + 2u];
+                    float c01 = packedGaussians[gBase + 3u];
+                    float c10 = packedGaussians[gBase + 4u];
+                    float c11 = packedGaussians[gBase + 5u];
+                    float colorX = packedGaussians[gBase + 6u];
+                    float colorY = packedGaussians[gBase + 7u];
+                    float colorZ = packedGaussians[gBase + 8u];
+                    float opacity = packedGaussians[gBase + 9u];
+                    float depth = packedGaussians[gBase + 10u];
+
+                    float dx = px - meanX;
+                    float dy = py - meanY;
+                    float dxdy = dx * dy;
+                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
+                    float raw = exp(exponent) * opacity;
+                    float alpha = raw > 0.99 ? 0.99 : raw;
+
+                    float contrib = T * alpha;
+                    accAlpha += contrib;
+                    accumColorX += contrib * colorX;
+                    accumColorY += contrib * colorY;
+                    accumColorZ += contrib * colorZ;
+                    accumDepth += contrib * depth;
+
+                    T *= (1.0 - alpha);
+                    if (T < 0.0001) {
+                        break;
+                    }
+                }
+
+                float bg = whiteBg != 0u ? (1.0 - accAlpha) : 0.0;
+                uint colorBase = p * 3u;
+                outColor[colorBase + 0u] = accumColorX + bg;
+                outColor[colorBase + 1u] = accumColorY + bg;
+                outColor[colorBase + 2u] = accumColorZ + bg;
+                outDepth[p] = accumDepth;
+                outAlpha[p] = accAlpha;
+                """
+        )
+
+        let backwardKernel = MLXFast.metalKernel(
+            name: "gaussian_tile_global_backward_v1",
+            inputNames: [
+                "packedGaussians", "packedTileIndices", "tileCounts", "cotColor", "cotDepth",
+                "cotAlpha", "renderCounts",
+            ],
+            outputNames: ["gradPackedGaussians"],
+            source: """
+                uint p = thread_position_in_grid.x;
+                uint pixelCount = renderCounts[0];
+                if (p >= pixelCount) {
+                    return;
+                }
+
+                uint maxTilePairs = renderCounts[1];
+                uint gridW = renderCounts[2];
+                uint tileW = renderCounts[3];
+                uint tileH = renderCounts[4];
+                uint imageW = renderCounts[5];
+                uint imageH = renderCounts[6];
+                uint whiteBg = renderCounts[7];
+
+                uint y = p / imageW;
+                uint x = p - y * imageW;
+                if (y >= imageH) {
+                    return;
+                }
+
+                uint tileX = x / tileW;
+                uint tileY = y / tileH;
+                uint tileIndex = tileY * gridW + tileX;
+                if (tileIndex >= tileCounts_shape[0]) {
+                    return;
+                }
+
+                uint count = tileCounts[tileIndex];
+                if (count == 0u) {
+                    return;
+                }
+                uint base = tileIndex * maxTilePairs;
+
+                uint colorBaseP = p * 3u;
+                float gColorX = cotColor[colorBaseP + 0u];
+                float gColorY = cotColor[colorBaseP + 1u];
+                float gColorZ = cotColor[colorBaseP + 2u];
+                float gDepth = cotDepth[p];
+                float gAlpha = cotAlpha[p];
+                float whiteTerm = whiteBg != 0u ? -(gColorX + gColorY + gColorZ) : 0.0;
+
+                float px = float(x);
+                float py = float(y);
+
+                float trans = 1.0;
+                float weightedSum = 0.0;
+                for (uint i = 0; i < count; ++i) {
+                    uint gi = uint(packedTileIndices[base + i]);
+                    uint gBase = gi * 11u;
+
+                    float meanX = packedGaussians[gBase + 0u];
+                    float meanY = packedGaussians[gBase + 1u];
+                    float c00 = packedGaussians[gBase + 2u];
+                    float c01 = packedGaussians[gBase + 3u];
+                    float c10 = packedGaussians[gBase + 4u];
+                    float c11 = packedGaussians[gBase + 5u];
+                    float colorX = packedGaussians[gBase + 6u];
+                    float colorY = packedGaussians[gBase + 7u];
+                    float colorZ = packedGaussians[gBase + 8u];
+                    float opacity = packedGaussians[gBase + 9u];
+                    float depth = packedGaussians[gBase + 10u];
+
+                    float dx = px - meanX;
+                    float dy = py - meanY;
+                    float dxdy = dx * dy;
+                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
+                    float expVal = exp(exponent);
+                    float raw = expVal * opacity;
+                    float alpha = raw > 0.99 ? 0.99 : raw;
+
+                    float contrib = trans * alpha;
+                    float c = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha
+                        + whiteTerm;
+                    weightedSum += c * contrib;
+
+                    trans *= (1.0 - alpha);
+                    if (trans < 0.0001) {
+                        break;
+                    }
+                }
+
+                trans = 1.0;
+                float prefixWeighted = 0.0;
+                for (uint i = 0; i < count; ++i) {
+                    uint gi = uint(packedTileIndices[base + i]);
+                    uint gBase = gi * 11u;
+
+                    float meanX = packedGaussians[gBase + 0u];
+                    float meanY = packedGaussians[gBase + 1u];
+                    float c00 = packedGaussians[gBase + 2u];
+                    float c01 = packedGaussians[gBase + 3u];
+                    float c10 = packedGaussians[gBase + 4u];
+                    float c11 = packedGaussians[gBase + 5u];
+                    float colorX = packedGaussians[gBase + 6u];
+                    float colorY = packedGaussians[gBase + 7u];
+                    float colorZ = packedGaussians[gBase + 8u];
+                    float opacity = packedGaussians[gBase + 9u];
+                    float depth = packedGaussians[gBase + 10u];
+
+                    float dx = px - meanX;
+                    float dy = py - meanY;
+                    float dxdy = dx * dy;
+                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
+                    float expVal = exp(exponent);
+                    float raw = expVal * opacity;
+                    float alpha = raw > 0.99 ? 0.99 : raw;
+
+                    float contrib = trans * alpha;
+                    float c = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha
+                        + whiteTerm;
+                    prefixWeighted += c * contrib;
+
+                    float suffixWeighted = weightedSum - prefixWeighted;
+                    float denom = 1.0 - alpha;
+                    if (denom < 1e-6) {
+                        denom = 1e-6;
+                    }
+                    float gradAlpha = c * trans - suffixWeighted / denom;
+
+                    atomic_fetch_add_explicit(
+                        ((atomic_float device*)(gradPackedGaussians + (gBase + 10u))),
+                        gDepth * contrib, memory_order_relaxed);
+                    atomic_fetch_add_explicit(
+                        ((atomic_float device*)(gradPackedGaussians + (gBase + 6u))),
+                        gColorX * contrib, memory_order_relaxed);
+                    atomic_fetch_add_explicit(
+                        ((atomic_float device*)(gradPackedGaussians + (gBase + 7u))),
+                        gColorY * contrib, memory_order_relaxed);
+                    atomic_fetch_add_explicit(
+                        ((atomic_float device*)(gradPackedGaussians + (gBase + 8u))),
+                        gColorZ * contrib, memory_order_relaxed);
+
+                    if (raw <= 0.99) {
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 9u))),
+                            gradAlpha * expVal, memory_order_relaxed);
+
+                        float gradExponent = gradAlpha * raw;
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 2u))),
+                            gradExponent * (-0.5 * dx * dx), memory_order_relaxed);
+                        float gradOffDiag = gradExponent * (-0.5 * dxdy);
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 3u))),
+                            gradOffDiag, memory_order_relaxed);
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 4u))),
+                            gradOffDiag, memory_order_relaxed);
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 5u))),
+                            gradExponent * (-0.5 * dy * dy), memory_order_relaxed);
+
+                        float c01sum = c01 + c10;
+                        float gradDy = gradExponent * (-dy * c11 - 0.5 * dx * c01sum);
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 0u))),
+                            -(gradExponent * (-dx * c00 - 0.5 * dy * c01sum)), memory_order_relaxed);
+                        atomic_fetch_add_explicit(
+                            ((atomic_float device*)(gradPackedGaussians + (gBase + 1u))),
+                            -gradDy, memory_order_relaxed);
+                    }
+
+                    trans *= (1.0 - alpha);
+                    if (trans < 0.0001) {
+                        break;
+                    }
+                }
+                """,
+            atomicOutputs: true
+        )
+
+        let pixelCount = W * H
+        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
+            let packedGaussians = inputs[0]
+            let packedTileIndices = inputs[1]
+            let tileCounts = inputs[2]
+            let renderCounts = inputs[3]
+
+            return forwardKernel(
+                [packedGaussians, packedTileIndices, tileCounts, renderCounts],
+                grid: (max(pixelCount, 1), 1, 1),
+                threadGroup: (min(256, max(pixelCount, 1)), 1, 1),
+                outputShapes: [[pixelCount, 3], [pixelCount, 1], [pixelCount, 1]],
+                outputDTypes: [packedGaussians.dtype, packedGaussians.dtype, packedGaussians.dtype]
+            )
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let packedGaussians = primals[0]
+                let packedTileIndices = primals[1]
+                let tileCounts = primals[2]
+                let renderCounts = primals[3]
+                let cotColor = cotangents[0]
+                let cotDepth = cotangents[1]
+                let cotAlpha = cotangents[2]
+
+                let gradPacked = backwardKernel(
+                    [
+                        packedGaussians, packedTileIndices, tileCounts, cotColor, cotDepth, cotAlpha,
+                        renderCounts,
+                    ],
+                    grid: (max(pixelCount, 1), 1, 1),
+                    threadGroup: (min(256, max(pixelCount, 1)), 1, 1),
+                    outputShapes: [packedGaussians.shape],
+                    outputDTypes: [packedGaussians.dtype],
+                    initValue: 0.0
+                )[0]
+
+                return [
+                    gradPacked,
+                    MLXArray.zeros(packedTileIndices.shape, dtype: packedTileIndices.dtype),
+                    MLXArray.zeros(tileCounts.shape, dtype: tileCounts.dtype),
+                    MLXArray.zeros(renderCounts.shape, dtype: renderCounts.dtype),
+                ]
+            }
+        }
+    }()
+
+    private func renderGlobalTileCompositeCustomOp(
+        packedGaussians: MLXArray,
+        globalTileSliceInfo: GlobalTileSliceInfo
+    ) -> (MLXArray, MLXArray, MLXArray)? {
+        guard let globalTileCompositeCustomFunction else {
+            return nil
+        }
+        let outputs = globalTileCompositeCustomFunction(
+            [
+                packedGaussians,
+                globalTileSliceInfo.packedTileIndices,
+                globalTileSliceInfo.tileCounts,
+                globalTileSliceInfo.renderCounts,
+            ]
+        )
+        return (outputs[0], outputs[1], outputs[2])
+    }
+
     private static func bitWidthForExclusiveUpperBound(_ value: Int) -> Int {
         guard value > 1 else { return 1 }
         var v = value - 1
@@ -556,11 +898,27 @@ class GaussianRenderer {
 
         let gaussianCount = radii.shape[0]
         let numTiles = gridW * gridH
+        let pixelCount = W * H
+        func makeRenderCounts(maxTilePairs: Int) -> MLXArray {
+            MLXArray(
+                [
+                    UInt32(pixelCount),
+                    UInt32(maxTilePairs),
+                    UInt32(gridW),
+                    UInt32(TILE_SIZE.w),
+                    UInt32(TILE_SIZE.h),
+                    UInt32(W),
+                    UInt32(H),
+                    UInt32(whiteBackground ? 1 : 0),
+                ]
+            )
+        }
         if gaussianCount == 0 {
             return GlobalTileSliceInfo(
                 packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: MLXArray.zeros([numTiles], dtype: .uint32),
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
             )
         }
 
@@ -594,7 +952,8 @@ class GaussianRenderer {
             return GlobalTileSliceInfo(
                 packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: MLXArray.zeros([numTiles], dtype: .uint32),
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
             )
         }
 
@@ -656,7 +1015,8 @@ class GaussianRenderer {
             return GlobalTileSliceInfo(
                 packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: tileCountsArray,
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
             )
         }
 
@@ -675,7 +1035,8 @@ class GaussianRenderer {
         return GlobalTileSliceInfo(
             packedTileIndices: packedTileIndices,
             tileCounts: tileCountsArray,
-            maxTilePairs: maxTilePairs
+            maxTilePairs: maxTilePairs,
+            renderCounts: makeRenderCounts(maxTilePairs: maxTilePairs)
         )
     }
 
@@ -1497,6 +1858,18 @@ class GaussianRenderer {
             )
         } else {
             globalTileSliceInfo = nil
+        }
+
+        if
+            let globalTileSliceInfo,
+            let blended = renderGlobalTileCompositeCustomOp(
+                packedGaussians: packedGaussians,
+                globalTileSliceInfo: globalTileSliceInfo)
+        {
+            let renderColor = blended.0.reshaped([H, W, 3])
+            let renderDepth = blended.1.reshaped([H, W, 1])
+            let renderAlpha = blended.2.reshaped([H, W, 1])
+            return (renderColor, renderDepth, renderAlpha, radii .> 0, radii)
         }
 
         let render_color = self.whiteBackground
