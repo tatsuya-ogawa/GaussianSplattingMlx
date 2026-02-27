@@ -63,55 +63,72 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
     return float4(color.rgb, 1.0);
 }
 
-// Radix sort kernels for depth sorting
-kernel void radixSortCount(
-    device const float* keys [[buffer(0)]],
-    device atomic_uint* histogram [[buffer(1)]],
-    constant uint& bit [[buffer(2)]],
+// ---- Radix Sort Kernels (8-bit, 4-pass) ----
+
+// Extract depth from projected gaussians and convert to sortable unsigned integer.
+// IEEE 754 float → sortable uint: flip sign bit for positive, flip all bits for negative.
+kernel void prepareRadixSortKeys(
+    device const ProjectedGaussian* projected [[buffer(0)]],
+    device uint* keys [[buffer(1)]],
+    device uint* values [[buffer(2)]],
     constant uint& numElements [[buffer(3)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= numElements) return;
-    
-    uint key = as_type<uint>(keys[id]);
-    uint digit = (key >> bit) & 0xFF;
+    float depth = projected[id].depth;
+    uint bits = as_type<uint>(depth);
+    // Positive floats: flip sign bit so they sort above negative.
+    // Negative floats: flip all bits so larger magnitude sorts lower.
+    uint mask = (bits & 0x80000000u) ? 0xFFFFFFFFu : 0x80000000u;
+    keys[id] = bits ^ mask;
+    values[id] = id;
+}
+
+// Count digit occurrences for one 8-bit radix pass.
+kernel void radixSortCount(
+    device const uint* keys [[buffer(0)]],
+    device atomic_uint* histogram [[buffer(1)]],
+    constant uint& bitOffset [[buffer(2)]],
+    constant uint& numElements [[buffer(3)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= numElements) return;
+    uint digit = (keys[id] >> bitOffset) & 0xFFu;
     atomic_fetch_add_explicit(&histogram[digit], 1, memory_order_relaxed);
 }
 
-kernel void radixSortScan(
+// Exclusive prefix sum of 256-entry histogram (single-thread, good enough for 256 entries).
+kernel void radixSortPrefixSum(
     device uint* histogram [[buffer(0)]],
     uint id [[thread_position_in_grid]]
 ) {
-    if (id == 0) {
-        uint sum = 0;
-        for (uint i = 0; i < 256; i++) {
-            uint temp = histogram[i];
-            histogram[i] = sum;
-            sum += temp;
-        }
+    if (id != 0) return;
+    uint sum = 0;
+    for (uint i = 0; i < 256; i++) {
+        uint count = histogram[i];
+        histogram[i] = sum;
+        sum += count;
     }
 }
 
+// Scatter keys and values to sorted positions using atomic offset claims.
 kernel void radixSortScatter(
-    device const float* inputKeys [[buffer(0)]],
+    device const uint* inputKeys [[buffer(0)]],
     device const uint* inputValues [[buffer(1)]],
-    device float* outputKeys [[buffer(2)]],
+    device uint* outputKeys [[buffer(2)]],
     device uint* outputValues [[buffer(3)]],
     device atomic_uint* histogram [[buffer(4)]],
-    constant uint& bit [[buffer(5)]],
+    constant uint& bitOffset [[buffer(5)]],
     constant uint& numElements [[buffer(6)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= numElements) return;
-    
-    float key = inputKeys[id];
+    uint key = inputKeys[id];
     uint value = inputValues[id];
-    uint keyBits = as_type<uint>(key);
-    uint digit = (keyBits >> bit) & 0xFF;
-    
-    uint position = atomic_fetch_add_explicit(&histogram[digit], 1, memory_order_relaxed);
-    outputKeys[position] = key;
-    outputValues[position] = value;
+    uint digit = (key >> bitOffset) & 0xFFu;
+    uint pos = atomic_fetch_add_explicit(&histogram[digit], 1, memory_order_relaxed);
+    outputKeys[pos] = key;
+    outputValues[pos] = value;
 }
 
 // Tile assignment kernel

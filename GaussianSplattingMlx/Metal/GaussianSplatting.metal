@@ -151,7 +151,8 @@ kernel void projectGaussians(
     J[2][2] = 1.0f;
     
     float3x3 W = transpose(float3x3(camera.viewMatrix[0].xyz, camera.viewMatrix[1].xyz, camera.viewMatrix[2].xyz));
-    float3x3 cov2d_full = J * W * cov3d * transpose(W) * transpose(J);
+    float3x3 T = W * J;
+    float3x3 cov2d_full = transpose(T) * cov3d * T;
     
     // Extract 2D part and add filtering
     float3 cov2d;
@@ -176,8 +177,9 @@ kernel void projectGaussians(
         
         visibilityMask[id] = 1;
         
-        // Compute color (simplified for now)
-        float3 color = gaussian.sh_dc + 0.5f;
+        // Compute color (SH DC band)
+        const float SH_C0 = 0.28209479177387814f;
+        float3 color = clamp(SH_C0 * gaussian.sh_dc + 0.5f, 0.0f, 1.0f);
         
         // Store projected data
         projectedGaussians[id].mean2d = screenPos;
