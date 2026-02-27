@@ -344,6 +344,131 @@ class GaussianRenderer {
         return (outputs[0], outputs[1], outputs[2])
     }
 
+    private static func bitWidthForExclusiveUpperBound(_ value: Int) -> Int {
+        guard value > 1 else { return 1 }
+        var v = value - 1
+        var bits = 0
+        while v > 0 {
+            bits += 1
+            v >>= 1
+        }
+        return bits
+    }
+
+    private lazy var radixExtractBitKernel: MLXFast.MLXFastKernel = {
+        MLXFast.metalKernel(
+            name: "radix_extract_bit_u32_v1",
+            inputNames: ["keyPart", "bitValue"],
+            outputNames: ["oneMask"],
+            source: """
+                uint elem = thread_position_in_grid.x;
+                uint n = keyPart_shape[0];
+                if (elem >= n) {
+                    return;
+                }
+
+                uint bit = bitValue;
+                uint value = keyPart[elem];
+                oneMask[elem] = int((value >> bit) & 1u);
+                """
+        )
+    }()
+
+    private lazy var radixScatterTripletKernel: MLXFast.MLXFastKernel = {
+        MLXFast.metalKernel(
+            name: "radix_scatter_triplet_u32_v1",
+            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "destIndices"],
+            outputNames: ["keysHighOut", "keysLowOut", "valuesOut"],
+            source: """
+                uint elem = thread_position_in_grid.x;
+                uint n = keysHighIn_shape[0];
+                if (elem >= n) {
+                    return;
+                }
+
+                uint dst = uint(destIndices[elem]);
+                if (dst >= n) {
+                    return;
+                }
+                keysHighOut[dst] = keysHighIn[elem];
+                keysLowOut[dst] = keysLowIn[elem];
+                valuesOut[dst] = valuesIn[elem];
+                """
+        )
+    }()
+
+    private func radixBitPassForTileKeys(
+        keyPart: MLXArray,
+        bit: Int,
+        keysHigh: MLXArray,
+        keysLow: MLXArray,
+        values: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let n = keyPart.shape[0]
+        let oneMask = radixExtractBitKernel(
+            [keyPart, MLXArray(UInt32(bit))],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [[n]],
+            outputDTypes: [.int32]
+        )[0]
+        let zeroMask = 1 - oneMask
+
+        let zeroInclusive = zeroMask.cumsum(axis: 0).asType(.int32)
+        let oneInclusive = oneMask.cumsum(axis: 0).asType(.int32)
+        let zeroExclusive = zeroInclusive - zeroMask
+        let oneExclusive = oneInclusive - oneMask
+        let zeroCount = zeroInclusive[n - 1]
+
+        let destination =
+            zeroExclusive
+            + oneMask * (zeroCount + oneExclusive - zeroExclusive)
+        let destinationIndices = destination.asType(.int32)
+
+        let scattered = radixScatterTripletKernel(
+            [keysHigh, keysLow, values, destinationIndices],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [keysHigh.shape, keysLow.shape, values.shape],
+            outputDTypes: [keysHigh.dtype, keysLow.dtype, values.dtype]
+        )
+        return (scattered[0], scattered[1], scattered[2])
+    }
+
+    private func radixSortTileKeys(
+        keysHigh: MLXArray,
+        keysLow: MLXArray,
+        values: MLXArray,
+        tileBitCount: Int
+    ) -> (sortedKeysHigh: MLXArray, sortedKeysLow: MLXArray, sortedValues: MLXArray) {
+        var sortedKeysHigh = keysHigh
+        var sortedKeysLow = keysLow
+        var sortedValues = values
+
+        for bit in 0..<32 {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
+                keyPart: sortedKeysLow,
+                bit: bit,
+                keysHigh: sortedKeysHigh,
+                keysLow: sortedKeysLow,
+                values: sortedValues
+            )
+        }
+
+        let keyHighBits = Swift.max(tileBitCount, 1)
+        for bit in 0..<keyHighBits {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
+                keyPart: sortedKeysHigh,
+                bit: bit,
+                keysHigh: sortedKeysHigh,
+                keysLow: sortedKeysLow,
+                values: sortedValues
+            )
+        }
+
+        return (sortedKeysHigh, sortedKeysLow, sortedValues)
+    }
+
     // MARK: - Global Tile Slice Kernels
 
     private lazy var countTilesPerGaussianKernel: MLXFast.MLXFastKernel? = {
@@ -440,12 +565,15 @@ class GaussianRenderer {
         let keysHigh = MLX.stopGradient(generated[0])
         let keysLow = MLX.stopGradient(generated[1])
         let gaussIdx = MLX.stopGradient(generated[2])
-        let keys64 =
-            keysHigh.asType(.uint64) * MLXArray(UInt64(1) << 32)
-            + keysLow.asType(.uint64)
-        let sortedIndices = MLX.stopGradient(MLX.argSort(keys64))
-        let sortedKeysHigh = MLX.stopGradient(keysHigh[sortedIndices])
-        let sortedGaussIdx = MLX.stopGradient(gaussIdx[sortedIndices])
+        let tileBitCount = Self.bitWidthForExclusiveUpperBound(numTiles)
+        let radixSorted = radixSortTileKeys(
+            keysHigh: keysHigh,
+            keysLow: keysLow,
+            values: gaussIdx,
+            tileBitCount: tileBitCount
+        )
+        let sortedKeysHigh = MLX.stopGradient(radixSorted.sortedKeysHigh)
+        let sortedGaussIdx = MLX.stopGradient(radixSorted.sortedValues)
 
         let trCounts = MLXArray([UInt32(totalPairs), UInt32(numTiles)])
         let tileRanges = MLX.stopGradient(
