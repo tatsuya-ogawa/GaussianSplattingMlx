@@ -44,6 +44,10 @@ entries=(
   count_tiles_per_gaussian
   generate_keys
   compute_tile_ranges
+  compute_tile_counts_from_ranges
+  build_packed_tile_indices
+  gaussian_tile_global_forward
+  gaussian_tile_global_backward
 )
 
 for entry in "${entries[@]}"; do
@@ -66,6 +70,22 @@ for entry in "${entries[@]}"; do
       input_names="tr_sortedKeysHigh_1,tr_counts_1"
       output_names="tr_tileRanges_1"
       ;;
+    compute_tile_counts_from_ranges)
+      input_names="ctc_tileRanges_1,ctc_tileCountArgs_1"
+      output_names="ctc_tileCounts_1"
+      ;;
+    build_packed_tile_indices)
+      input_names="bpi_sortedGaussIdx_1,bpi_tileRanges_1,bpi_packArgs_1"
+      output_names="bpi_packedTileIndices_1"
+      ;;
+    gaussian_tile_global_forward)
+      input_names="gtf_packedGaussians_1,gtf_packedTileIndices_1,gtf_tileCounts_1,gtf_renderCounts_1"
+      output_names="gtf_outColor_1,gtf_outDepth_1,gtf_outAlpha_1"
+      ;;
+    gaussian_tile_global_backward)
+      input_names="gtb_packedGaussians_1,gtb_packedTileIndices_1,gtb_tileCounts_1,gtb_cotColor_1,gtb_cotDepth_1,gtb_cotAlpha_1,gtb_renderCounts_1"
+      output_names="gtb_gradPackedGaussians_1"
+      ;;
     *)
       echo "Unknown entry: $entry" >&2
       exit 1
@@ -83,7 +103,9 @@ for entry in "${entries[@]}"; do
 done
 
 mkdir -p "$BUNDLE_DIR"
-cp "$OUT_DIR"/*_mlx.json "$BUNDLE_DIR/"
+for entry in "${entries[@]}"; do
+  cp "$OUT_DIR/${entry}_mlx.json" "$BUNDLE_DIR/"
+done
 
 echo "[slang-tile-global] done"
 echo "[slang-tile-global] generated JSON copied to: $BUNDLE_DIR"

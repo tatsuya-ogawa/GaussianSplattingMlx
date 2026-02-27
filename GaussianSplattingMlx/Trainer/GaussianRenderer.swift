@@ -122,8 +122,10 @@ private struct TileEntry {
 }
 
 private struct GlobalTileSliceInfo {
-    let sortedGaussIdx: MLXArray
-    let tileRanges: [UInt32]
+    let packedTileIndices: MLXArray
+    let tileCounts: MLXArray
+    let maxTilePairs: Int
+    let renderCounts: MLXArray
 }
 
 class GaussianRenderer {
@@ -210,17 +212,18 @@ class GaussianRenderer {
             let sortedConic = inputs[3]
             let sortedOpacity = inputs[4]
             let sortedColor = inputs[5]
-            let activeGaussianCount = inputs[6].item(Int.self)
+            let activeGaussianCount = inputs[6].asType(.uint32).reshaped([1])
 
             let pixelCount = tileCoord.shape[0]
             let sortedConicFlat = sortedConic.reshaped([-1, 4])
-            let counts = MLXArray(
+            let counts = MLX.concatenated(
                 [
-                    UInt32(pixelCount),
-                    UInt32(activeGaussianCount),
-                    UInt32(whiteBackground ? 1 : 0),
-                ]
-            )
+                    MLXArray([UInt32(pixelCount)]),
+                    activeGaussianCount,
+                    MLXArray([UInt32(whiteBackground ? 1 : 0)]),
+                ],
+                axis: 0
+            ).asType(.uint32)
             return forwardKernel(
                 [
                     tileCoord,
@@ -255,20 +258,21 @@ class GaussianRenderer {
                 let sortedConic = primals[3]
                 let sortedOpacity = primals[4]
                 let sortedColor = primals[5]
-                let activeGaussianCount = primals[6].item(Int.self)
+                let activeGaussianCount = primals[6].asType(.uint32).reshaped([1])
                 let cotColor = cotangents[0]
                 let cotDepth = cotangents[1]
                 let cotAlpha = cotangents[2]
 
                 let pixelCount = tileCoord.shape[0]
                 let sortedConicFlat = sortedConic.reshaped([-1, 4])
-                let counts = MLXArray(
+                let counts = MLX.concatenated(
                     [
-                        UInt32(pixelCount),
-                        UInt32(activeGaussianCount),
-                        UInt32(whiteBackground ? 1 : 0),
-                    ]
-                )
+                        MLXArray([UInt32(pixelCount)]),
+                        activeGaussianCount,
+                        MLXArray([UInt32(whiteBackground ? 1 : 0)]),
+                    ],
+                    axis: 0
+                ).asType(.uint32)
 
                 let kernelGrads = backwardKernel(
                     [
@@ -304,7 +308,7 @@ class GaussianRenderer {
 
                 let gradTileCoord = MLXArray.zeros(tileCoord.shape, dtype: tileCoord.dtype)
                 let gradSortedConic = kernelGrads[2].reshaped(sortedConic.shape)
-                let gradActiveGaussianCount = MLXArray(0.0)
+                let gradActiveGaussianCount = MLXArray.zeros(primals[6].shape, dtype: primals[6].dtype)
                 return [
                     gradTileCoord,
                     kernelGrads[0],
@@ -325,7 +329,7 @@ class GaussianRenderer {
         sortedConic: MLXArray,
         sortedOpacity: MLXArray,
         sortedColor: MLXArray,
-        activeGaussianCount: Int
+        activeGaussianCount: MLXArray
     ) -> (MLXArray, MLXArray, MLXArray)? {
         guard let fusedTileCompositeCustomFunction else {
             return nil
@@ -338,10 +342,217 @@ class GaussianRenderer {
                 sortedConic,
                 sortedOpacity,
                 sortedColor,
-                MLXArray(Float(activeGaussianCount)),
+                activeGaussianCount,
             ]
         )
         return (outputs[0], outputs[1], outputs[2])
+    }
+
+    private lazy var globalTileCompositeCustomFunction: (([MLXArray]) -> [MLXArray])? = {
+        guard useFusedTileCustomOp else {
+            return nil
+        }
+        guard
+            let forwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_tile_global_forward_mlx"),
+            let backwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_tile_global_backward_mlx")
+        else {
+            Logger.shared.debug(
+                "Slang global tile kernels are unavailable. Per-tile path is used.")
+            return nil
+        }
+
+        let pixelCount = W * H
+        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
+            let packedGaussians = inputs[0]
+            let packedTileIndices = inputs[1]
+            let tileCounts = inputs[2]
+            let renderCounts = inputs[3]
+
+            return forwardKernel(
+                [packedGaussians, packedTileIndices, tileCounts, renderCounts],
+                grid: (max(pixelCount, 1), 1, 1),
+                threadGroup: (min(256, max(pixelCount, 1)), 1, 1),
+                outputShapes: [[pixelCount, 3], [pixelCount, 1], [pixelCount, 1]],
+                outputDTypes: [packedGaussians.dtype, packedGaussians.dtype, packedGaussians.dtype]
+            )
+        }
+
+        return CustomFunction {
+            Forward(forward)
+            VJP { primals, cotangents in
+                let packedGaussians = primals[0]
+                let packedTileIndices = primals[1]
+                let tileCounts = primals[2]
+                let renderCounts = primals[3]
+                let cotColor = cotangents[0]
+                let cotDepth = cotangents[1]
+                let cotAlpha = cotangents[2]
+
+                let gradPacked = backwardKernel(
+                    [
+                        packedGaussians, packedTileIndices, tileCounts, cotColor, cotDepth, cotAlpha,
+                        renderCounts,
+                    ],
+                    grid: (max(pixelCount, 1), 1, 1),
+                    threadGroup: (min(256, max(pixelCount, 1)), 1, 1),
+                    outputShapes: [packedGaussians.shape],
+                    outputDTypes: [packedGaussians.dtype],
+                    initValue: 0.0
+                )[0]
+
+                return [
+                    gradPacked,
+                    MLXArray.zeros(packedTileIndices.shape, dtype: packedTileIndices.dtype),
+                    MLXArray.zeros(tileCounts.shape, dtype: tileCounts.dtype),
+                    MLXArray.zeros(renderCounts.shape, dtype: renderCounts.dtype),
+                ]
+            }
+        }
+    }()
+
+    private func renderGlobalTileCompositeCustomOp(
+        packedGaussians: MLXArray,
+        globalTileSliceInfo: GlobalTileSliceInfo
+    ) -> (MLXArray, MLXArray, MLXArray)? {
+        guard let globalTileCompositeCustomFunction else {
+            return nil
+        }
+        let outputs = globalTileCompositeCustomFunction(
+            [
+                packedGaussians,
+                globalTileSliceInfo.packedTileIndices,
+                globalTileSliceInfo.tileCounts,
+                globalTileSliceInfo.renderCounts,
+            ]
+        )
+        return (outputs[0], outputs[1], outputs[2])
+    }
+
+    private static func bitWidthForExclusiveUpperBound(_ value: Int) -> Int {
+        guard value > 1 else { return 1 }
+        var v = value - 1
+        var bits = 0
+        while v > 0 {
+            bits += 1
+            v >>= 1
+        }
+        return bits
+    }
+
+    private lazy var radixExtractBitKernel: MLXFast.MLXFastKernel = {
+        MLXFast.metalKernel(
+            name: "radix_extract_bit_u32_v1",
+            inputNames: ["keyPart", "bitValue"],
+            outputNames: ["oneMask"],
+            source: """
+                uint elem = thread_position_in_grid.x;
+                uint n = keyPart_shape[0];
+                if (elem >= n) {
+                    return;
+                }
+
+                uint bit = bitValue;
+                uint value = keyPart[elem];
+                oneMask[elem] = int((value >> bit) & 1u);
+                """
+        )
+    }()
+
+    private lazy var radixScatterTripletKernel: MLXFast.MLXFastKernel = {
+        MLXFast.metalKernel(
+            name: "radix_scatter_triplet_u32_v1",
+            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "destIndices"],
+            outputNames: ["keysHighOut", "keysLowOut", "valuesOut"],
+            source: """
+                uint elem = thread_position_in_grid.x;
+                uint n = keysHighIn_shape[0];
+                if (elem >= n) {
+                    return;
+                }
+
+                uint dst = uint(destIndices[elem]);
+                if (dst >= n) {
+                    return;
+                }
+                keysHighOut[dst] = keysHighIn[elem];
+                keysLowOut[dst] = keysLowIn[elem];
+                valuesOut[dst] = valuesIn[elem];
+                """
+        )
+    }()
+
+    private func radixBitPassForTileKeys(
+        keyPart: MLXArray,
+        bit: Int,
+        keysHigh: MLXArray,
+        keysLow: MLXArray,
+        values: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let n = keyPart.shape[0]
+        let oneMask = radixExtractBitKernel(
+            [keyPart, MLXArray(UInt32(bit))],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [[n]],
+            outputDTypes: [.int32]
+        )[0]
+        let zeroMask = 1 - oneMask
+
+        let zeroInclusive = zeroMask.cumsum(axis: 0).asType(.int32)
+        let oneInclusive = oneMask.cumsum(axis: 0).asType(.int32)
+        let zeroExclusive = zeroInclusive - zeroMask
+        let oneExclusive = oneInclusive - oneMask
+        let zeroCount = zeroInclusive[n - 1]
+
+        let destination =
+            zeroExclusive
+            + oneMask * (zeroCount + oneExclusive - zeroExclusive)
+        let destinationIndices = destination.asType(.int32)
+
+        let scattered = radixScatterTripletKernel(
+            [keysHigh, keysLow, values, destinationIndices],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [keysHigh.shape, keysLow.shape, values.shape],
+            outputDTypes: [keysHigh.dtype, keysLow.dtype, values.dtype]
+        )
+        return (scattered[0], scattered[1], scattered[2])
+    }
+
+    private func radixSortTileKeys(
+        keysHigh: MLXArray,
+        keysLow: MLXArray,
+        values: MLXArray,
+        tileBitCount: Int
+    ) -> (sortedKeysHigh: MLXArray, sortedKeysLow: MLXArray, sortedValues: MLXArray) {
+        var sortedKeysHigh = keysHigh
+        var sortedKeysLow = keysLow
+        var sortedValues = values
+
+        for bit in 0..<32 {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
+                keyPart: sortedKeysLow,
+                bit: bit,
+                keysHigh: sortedKeysHigh,
+                keysLow: sortedKeysLow,
+                values: sortedValues
+            )
+        }
+
+        let keyHighBits = Swift.max(tileBitCount, 1)
+        for bit in 0..<keyHighBits {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
+                keyPart: sortedKeysHigh,
+                bit: bit,
+                keysHigh: sortedKeysHigh,
+                keysLow: sortedKeysLow,
+                values: sortedValues
+            )
+        }
+
+        return (sortedKeysHigh, sortedKeysLow, sortedValues)
     }
 
     // MARK: - Global Tile Slice Kernels
@@ -358,10 +569,20 @@ class GaussianRenderer {
         try? SlangKernelSpecLoader.loadKernel(named: "compute_tile_ranges_mlx")
     }()
 
+    private lazy var computeTileCountsFromRangesKernel: MLXFast.MLXFastKernel? = {
+        try? SlangKernelSpecLoader.loadKernel(named: "compute_tile_counts_from_ranges_mlx")
+    }()
+
+    private lazy var buildPackedTileIndicesKernel: MLXFast.MLXFastKernel? = {
+        try? SlangKernelSpecLoader.loadKernel(named: "build_packed_tile_indices_mlx")
+    }()
+
     private var globalTileSliceKernelsAvailable: Bool {
         countTilesPerGaussianKernel != nil
             && generateKeysKernel != nil
             && computeTileRangesKernel != nil
+            && computeTileCountsFromRangesKernel != nil
+            && buildPackedTileIndicesKernel != nil
     }
 
     private func buildGlobalTileSliceInfo(
@@ -372,17 +593,36 @@ class GaussianRenderer {
         guard
             let countTilesPerGaussianKernel,
             let generateKeysKernel,
-            let computeTileRangesKernel
+            let computeTileRangesKernel,
+            let computeTileCountsFromRangesKernel,
+            let buildPackedTileIndicesKernel
         else {
             return nil
         }
 
         let gaussianCount = radii.shape[0]
         let numTiles = gridW * gridH
+        let pixelCount = W * H
+        func makeRenderCounts(maxTilePairs: Int) -> MLXArray {
+            MLXArray(
+                [
+                    UInt32(pixelCount),
+                    UInt32(maxTilePairs),
+                    UInt32(gridW),
+                    UInt32(TILE_SIZE.w),
+                    UInt32(TILE_SIZE.h),
+                    UInt32(W),
+                    UInt32(H),
+                    UInt32(whiteBackground ? 1 : 0),
+                ]
+            )
+        }
         if gaussianCount == 0 {
             return GlobalTileSliceInfo(
-                sortedGaussIdx: Self.emptyInt32Indices,
-                tileRanges: [UInt32](repeating: 0, count: numTiles * 2)
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
+                tileCounts: MLXArray.zeros([numTiles], dtype: .uint32),
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
             )
         }
 
@@ -414,8 +654,10 @@ class GaussianRenderer {
         let totalPairs = MLX.stopGradient(cumsum[gaussianCount - 1]).item(Int.self)
         if totalPairs <= 0 {
             return GlobalTileSliceInfo(
-                sortedGaussIdx: Self.emptyInt32Indices,
-                tileRanges: [UInt32](repeating: 0, count: numTiles * 2)
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
+                tileCounts: MLXArray.zeros([numTiles], dtype: .uint32),
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
             )
         }
 
@@ -440,12 +682,15 @@ class GaussianRenderer {
         let keysHigh = MLX.stopGradient(generated[0])
         let keysLow = MLX.stopGradient(generated[1])
         let gaussIdx = MLX.stopGradient(generated[2])
-        let keys64 =
-            keysHigh.asType(.uint64) * MLXArray(UInt64(1) << 32)
-            + keysLow.asType(.uint64)
-        let sortedIndices = MLX.stopGradient(MLX.argSort(keys64))
-        let sortedKeysHigh = MLX.stopGradient(keysHigh[sortedIndices])
-        let sortedGaussIdx = MLX.stopGradient(gaussIdx[sortedIndices])
+        let tileBitCount = Self.bitWidthForExclusiveUpperBound(numTiles)
+        let radixSorted = radixSortTileKeys(
+            keysHigh: keysHigh,
+            keysLow: keysLow,
+            values: gaussIdx,
+            tileBitCount: tileBitCount
+        )
+        let sortedKeysHigh = MLX.stopGradient(radixSorted.sortedKeysHigh)
+        let sortedGaussIdx = MLX.stopGradient(radixSorted.sortedValues)
 
         let trCounts = MLXArray([UInt32(totalPairs), UInt32(numTiles)])
         let tileRanges = MLX.stopGradient(
@@ -459,8 +704,44 @@ class GaussianRenderer {
             )[0]
         )
 
-        let tileRangesCpu = tileRanges.asArray(UInt32.self)
-        return GlobalTileSliceInfo(sortedGaussIdx: sortedGaussIdx, tileRanges: tileRangesCpu)
+        let tileCountArgs = MLXArray([UInt32(numTiles)])
+        let tileCountsArray = MLX.stopGradient(
+            computeTileCountsFromRangesKernel(
+                [tileRanges, tileCountArgs],
+                grid: (max(numTiles, 1), 1, 1),
+                threadGroup: (min(256, max(numTiles, 1)), 1, 1),
+                outputShapes: [[numTiles]],
+                outputDTypes: [.uint32]
+            )[0]
+        )
+        let maxTilePairs = MLX.stopGradient(MLX.max(tileCountsArray)).item(Int.self)
+        if maxTilePairs <= 0 {
+            return GlobalTileSliceInfo(
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
+                tileCounts: tileCountsArray,
+                maxTilePairs: 0,
+                renderCounts: makeRenderCounts(maxTilePairs: 0)
+            )
+        }
+
+        let packArgs = MLXArray([UInt32(numTiles), UInt32(maxTilePairs)])
+        let packedTileIndices = MLX.stopGradient(
+            buildPackedTileIndicesKernel(
+                [sortedGaussIdx, tileRanges, packArgs],
+                grid: (max(numTiles * maxTilePairs, 1), 1, 1),
+                threadGroup: (min(256, max(numTiles * maxTilePairs, 1)), 1, 1),
+                outputShapes: [[numTiles * maxTilePairs]],
+                outputDTypes: [.int32],
+                initValue: 0
+            )[0]
+        )
+
+        return GlobalTileSliceInfo(
+            packedTileIndices: packedTileIndices,
+            tileCounts: tileCountsArray,
+            maxTilePairs: maxTilePairs,
+            renderCounts: makeRenderCounts(maxTilePairs: maxTilePairs)
+        )
     }
 
     private lazy var covariance3DCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -1025,6 +1306,7 @@ class GaussianRenderer {
         inputIsDepthSorted: Bool = false,
         rect: (MLXArray, MLXArray),
         precomputedIndices: MLXArray? = nil,
+        precomputedCount: MLXArray? = nil,
         skipThreshold: Int = 0
     ) -> (MLXArray, MLXArray, MLXArray) {
         let h = tile.h
@@ -1043,7 +1325,7 @@ class GaussianRenderer {
             )
             in_mask = conditionToIndices(condition: in_mask_condition)
         }
-        if in_mask.shape[0] <= skipThreshold {
+        if precomputedIndices == nil && in_mask.shape[0] <= skipThreshold {
             Logger.shared.debug("skip tile")
             return (
                 self.whiteBackground
@@ -1070,14 +1352,26 @@ class GaussianRenderer {
         let sortedMeans2d = sortedPacked[.ellipsis, PackedGaussianIndex.means2d]
         let sortedConic = sortedPacked[.ellipsis, PackedGaussianIndex.conic].reshaped([-1, 2, 2])
         let sortedColor = sortedPacked[.ellipsis, PackedGaussianIndex.color]
-        let sortedOpacity = sortedPacked[.ellipsis, PackedGaussianIndex.opacity]
+        var sortedOpacity = sortedPacked[.ellipsis, PackedGaussianIndex.opacity]
         let sortedDepths = sortedPacked[.ellipsis, PackedGaussianIndex.depth]
+        let activeGaussianCountForKernel: MLXArray
+        if let precomputedCount {
+            let activeCountU32 = precomputedCount.asType(.uint32).reshaped([1])
+            if sortedOpacity.shape[0] > 0 {
+                let gaussianSlots = MLXArray(arange(sortedOpacity.shape[0])).asType(.uint32)
+                let validMask = (gaussianSlots .< activeCountU32[0]).asType(sortedOpacity.dtype)
+                    .reshaped([-1, 1])
+                sortedOpacity = sortedOpacity * validMask
+            }
+            activeGaussianCountForKernel = precomputedCount.asType(.float32).reshaped([1])
+        } else {
+            activeGaussianCountForKernel = MLXArray([Float(sortedDepths.shape[0])])
+        }
 
         let tile_color: MLXArray
         let tile_depth: MLXArray
         let acc_alpha: MLXArray
         if useFusedTileCustomOp {
-            let activeGaussianCount = sortedDepths.shape[0]
             let sortedDepthsPadded = Self.padFirstDimToAtLeast(
                 sortedDepths,
                 count: Self.fusedTileCustomMinGaussianCount
@@ -1105,7 +1399,7 @@ class GaussianRenderer {
                 sortedConic: sortedConicPadded,
                 sortedOpacity: sortedOpacityPadded,
                 sortedColor: sortedColorPadded,
-                activeGaussianCount: activeGaussianCount
+                activeGaussianCount: activeGaussianCountForKernel
             ) {
                 tile_color = blended.0
                 tile_depth = blended.1
@@ -1270,34 +1564,51 @@ class GaussianRenderer {
             globalTileSliceInfo = nil
         }
 
-        let render_color = MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
+        if
+            let globalTileSliceInfo,
+            let blended = renderGlobalTileCompositeCustomOp(
+                packedGaussians: packedGaussians,
+                globalTileSliceInfo: globalTileSliceInfo)
+        {
+            let renderColor = blended.0.reshaped([H, W, 3])
+            let renderDepth = blended.1.reshaped([H, W, 1])
+            let renderAlpha = blended.2.reshaped([H, W, 1])
+            return (renderColor, renderDepth, renderAlpha, radii .> 0, radii)
+        }
+
+        let render_color = self.whiteBackground
+            ? MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
+            : MLXArray.zeros(self.pix_coord.shape[0..<2] + [3])
         let render_depth = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
         let render_alpha = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
         for (tileIndex, tile) in tileEntries.enumerated() {
             Logger.shared.debug("before renderTile")
             let precomputedIndices: MLXArray?
+            let precomputedCount: MLXArray?
             if let globalTileSliceInfo {
-                let rangeBase = tileIndex * 2
-                if rangeBase + 1 < globalTileSliceInfo.tileRanges.count {
-                    let start = Int(globalTileSliceInfo.tileRanges[rangeBase])
-                    let end = Int(globalTileSliceInfo.tileRanges[rangeBase + 1])
-                    if end > start {
-                        precomputedIndices = globalTileSliceInfo.sortedGaussIdx[start..<end].asType(.int32)
-                    } else {
-                        precomputedIndices = Self.emptyInt32Indices
-                    }
+                if globalTileSliceInfo.maxTilePairs > 0 {
+                    let rowStart = tileIndex * globalTileSliceInfo.maxTilePairs
+                    precomputedIndices = MLX.stopGradient(
+                        globalTileSliceInfo.packedTileIndices[
+                            rowStart..<(rowStart + globalTileSliceInfo.maxTilePairs)
+                        ]
+                    )
+                    precomputedCount = MLX.stopGradient(globalTileSliceInfo.tileCounts[tileIndex..<(tileIndex + 1)])
                 } else {
-                    precomputedIndices = nil
+                    precomputedIndices = Self.emptyInt32Indices
+                    precomputedCount = MLXArray([UInt32(0)])
                 }
             } else {
                 precomputedIndices = nil
+                precomputedCount = nil
             }
             let (tile_color, tile_depth, acc_alpha) = renderTile(
                 tile: tile,
                 packedGaussians: packedGaussians,
                 inputIsDepthSorted: inputIsDepthSorted,
                 rect: rect,
-                precomputedIndices: precomputedIndices
+                precomputedIndices: precomputedIndices,
+                precomputedCount: precomputedCount
             )
             Logger.shared.debug("after renderTile")
             Logger.shared.debug("before assign")
