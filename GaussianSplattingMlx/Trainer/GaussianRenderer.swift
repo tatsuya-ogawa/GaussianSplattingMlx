@@ -352,275 +352,16 @@ class GaussianRenderer {
         guard useFusedTileCustomOp else {
             return nil
         }
-
-        let forwardKernel = MLXFast.metalKernel(
-            name: "gaussian_tile_global_forward_v1",
-            inputNames: ["packedGaussians", "packedTileIndices", "tileCounts", "renderCounts"],
-            outputNames: ["outColor", "outDepth", "outAlpha"],
-            source: """
-                uint p = thread_position_in_grid.x;
-                uint pixelCount = renderCounts[0];
-                if (p >= pixelCount) {
-                    return;
-                }
-
-                uint maxTilePairs = renderCounts[1];
-                uint gridW = renderCounts[2];
-                uint tileW = renderCounts[3];
-                uint tileH = renderCounts[4];
-                uint imageW = renderCounts[5];
-                uint imageH = renderCounts[6];
-                uint whiteBg = renderCounts[7];
-
-                uint y = p / imageW;
-                uint x = p - y * imageW;
-                if (y >= imageH) {
-                    return;
-                }
-
-                uint tileX = x / tileW;
-                uint tileY = y / tileH;
-                uint tileIndex = tileY * gridW + tileX;
-                if (tileIndex >= tileCounts_shape[0]) {
-                    return;
-                }
-
-                uint count = tileCounts[tileIndex];
-                uint base = tileIndex * maxTilePairs;
-
-                float px = float(x);
-                float py = float(y);
-                float T = 1.0;
-                float accAlpha = 0.0;
-                float accumColorX = 0.0;
-                float accumColorY = 0.0;
-                float accumColorZ = 0.0;
-                float accumDepth = 0.0;
-
-                for (uint i = 0; i < count; ++i) {
-                    uint gi = uint(packedTileIndices[base + i]);
-                    uint gBase = gi * 11u;
-
-                    float meanX = packedGaussians[gBase + 0u];
-                    float meanY = packedGaussians[gBase + 1u];
-                    float c00 = packedGaussians[gBase + 2u];
-                    float c01 = packedGaussians[gBase + 3u];
-                    float c10 = packedGaussians[gBase + 4u];
-                    float c11 = packedGaussians[gBase + 5u];
-                    float colorX = packedGaussians[gBase + 6u];
-                    float colorY = packedGaussians[gBase + 7u];
-                    float colorZ = packedGaussians[gBase + 8u];
-                    float opacity = packedGaussians[gBase + 9u];
-                    float depth = packedGaussians[gBase + 10u];
-
-                    float dx = px - meanX;
-                    float dy = py - meanY;
-                    float dxdy = dx * dy;
-                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-                    float raw = exp(exponent) * opacity;
-                    float alpha = raw > 0.99 ? 0.99 : raw;
-
-                    float contrib = T * alpha;
-                    accAlpha += contrib;
-                    accumColorX += contrib * colorX;
-                    accumColorY += contrib * colorY;
-                    accumColorZ += contrib * colorZ;
-                    accumDepth += contrib * depth;
-
-                    T *= (1.0 - alpha);
-                    if (T < 0.0001) {
-                        break;
-                    }
-                }
-
-                float bg = whiteBg != 0u ? (1.0 - accAlpha) : 0.0;
-                uint colorBase = p * 3u;
-                outColor[colorBase + 0u] = accumColorX + bg;
-                outColor[colorBase + 1u] = accumColorY + bg;
-                outColor[colorBase + 2u] = accumColorZ + bg;
-                outDepth[p] = accumDepth;
-                outAlpha[p] = accAlpha;
-                """
-        )
-
-        let backwardKernel = MLXFast.metalKernel(
-            name: "gaussian_tile_global_backward_v1",
-            inputNames: [
-                "packedGaussians", "packedTileIndices", "tileCounts", "cotColor", "cotDepth",
-                "cotAlpha", "renderCounts",
-            ],
-            outputNames: ["gradPackedGaussians"],
-            source: """
-                uint p = thread_position_in_grid.x;
-                uint pixelCount = renderCounts[0];
-                if (p >= pixelCount) {
-                    return;
-                }
-
-                uint maxTilePairs = renderCounts[1];
-                uint gridW = renderCounts[2];
-                uint tileW = renderCounts[3];
-                uint tileH = renderCounts[4];
-                uint imageW = renderCounts[5];
-                uint imageH = renderCounts[6];
-                uint whiteBg = renderCounts[7];
-
-                uint y = p / imageW;
-                uint x = p - y * imageW;
-                if (y >= imageH) {
-                    return;
-                }
-
-                uint tileX = x / tileW;
-                uint tileY = y / tileH;
-                uint tileIndex = tileY * gridW + tileX;
-                if (tileIndex >= tileCounts_shape[0]) {
-                    return;
-                }
-
-                uint count = tileCounts[tileIndex];
-                if (count == 0u) {
-                    return;
-                }
-                uint base = tileIndex * maxTilePairs;
-
-                uint colorBaseP = p * 3u;
-                float gColorX = cotColor[colorBaseP + 0u];
-                float gColorY = cotColor[colorBaseP + 1u];
-                float gColorZ = cotColor[colorBaseP + 2u];
-                float gDepth = cotDepth[p];
-                float gAlpha = cotAlpha[p];
-                float whiteTerm = whiteBg != 0u ? -(gColorX + gColorY + gColorZ) : 0.0;
-
-                float px = float(x);
-                float py = float(y);
-
-                float trans = 1.0;
-                float weightedSum = 0.0;
-                for (uint i = 0; i < count; ++i) {
-                    uint gi = uint(packedTileIndices[base + i]);
-                    uint gBase = gi * 11u;
-
-                    float meanX = packedGaussians[gBase + 0u];
-                    float meanY = packedGaussians[gBase + 1u];
-                    float c00 = packedGaussians[gBase + 2u];
-                    float c01 = packedGaussians[gBase + 3u];
-                    float c10 = packedGaussians[gBase + 4u];
-                    float c11 = packedGaussians[gBase + 5u];
-                    float colorX = packedGaussians[gBase + 6u];
-                    float colorY = packedGaussians[gBase + 7u];
-                    float colorZ = packedGaussians[gBase + 8u];
-                    float opacity = packedGaussians[gBase + 9u];
-                    float depth = packedGaussians[gBase + 10u];
-
-                    float dx = px - meanX;
-                    float dy = py - meanY;
-                    float dxdy = dx * dy;
-                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-                    float expVal = exp(exponent);
-                    float raw = expVal * opacity;
-                    float alpha = raw > 0.99 ? 0.99 : raw;
-
-                    float contrib = trans * alpha;
-                    float c = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha
-                        + whiteTerm;
-                    weightedSum += c * contrib;
-
-                    trans *= (1.0 - alpha);
-                    if (trans < 0.0001) {
-                        break;
-                    }
-                }
-
-                trans = 1.0;
-                float prefixWeighted = 0.0;
-                for (uint i = 0; i < count; ++i) {
-                    uint gi = uint(packedTileIndices[base + i]);
-                    uint gBase = gi * 11u;
-
-                    float meanX = packedGaussians[gBase + 0u];
-                    float meanY = packedGaussians[gBase + 1u];
-                    float c00 = packedGaussians[gBase + 2u];
-                    float c01 = packedGaussians[gBase + 3u];
-                    float c10 = packedGaussians[gBase + 4u];
-                    float c11 = packedGaussians[gBase + 5u];
-                    float colorX = packedGaussians[gBase + 6u];
-                    float colorY = packedGaussians[gBase + 7u];
-                    float colorZ = packedGaussians[gBase + 8u];
-                    float opacity = packedGaussians[gBase + 9u];
-                    float depth = packedGaussians[gBase + 10u];
-
-                    float dx = px - meanX;
-                    float dy = py - meanY;
-                    float dxdy = dx * dy;
-                    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-                    float expVal = exp(exponent);
-                    float raw = expVal * opacity;
-                    float alpha = raw > 0.99 ? 0.99 : raw;
-
-                    float contrib = trans * alpha;
-                    float c = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha
-                        + whiteTerm;
-                    prefixWeighted += c * contrib;
-
-                    float suffixWeighted = weightedSum - prefixWeighted;
-                    float denom = 1.0 - alpha;
-                    if (denom < 1e-6) {
-                        denom = 1e-6;
-                    }
-                    float gradAlpha = c * trans - suffixWeighted / denom;
-
-                    atomic_fetch_add_explicit(
-                        ((atomic_float device*)(gradPackedGaussians + (gBase + 10u))),
-                        gDepth * contrib, memory_order_relaxed);
-                    atomic_fetch_add_explicit(
-                        ((atomic_float device*)(gradPackedGaussians + (gBase + 6u))),
-                        gColorX * contrib, memory_order_relaxed);
-                    atomic_fetch_add_explicit(
-                        ((atomic_float device*)(gradPackedGaussians + (gBase + 7u))),
-                        gColorY * contrib, memory_order_relaxed);
-                    atomic_fetch_add_explicit(
-                        ((atomic_float device*)(gradPackedGaussians + (gBase + 8u))),
-                        gColorZ * contrib, memory_order_relaxed);
-
-                    if (raw <= 0.99) {
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 9u))),
-                            gradAlpha * expVal, memory_order_relaxed);
-
-                        float gradExponent = gradAlpha * raw;
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 2u))),
-                            gradExponent * (-0.5 * dx * dx), memory_order_relaxed);
-                        float gradOffDiag = gradExponent * (-0.5 * dxdy);
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 3u))),
-                            gradOffDiag, memory_order_relaxed);
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 4u))),
-                            gradOffDiag, memory_order_relaxed);
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 5u))),
-                            gradExponent * (-0.5 * dy * dy), memory_order_relaxed);
-
-                        float c01sum = c01 + c10;
-                        float gradDy = gradExponent * (-dy * c11 - 0.5 * dx * c01sum);
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 0u))),
-                            -(gradExponent * (-dx * c00 - 0.5 * dy * c01sum)), memory_order_relaxed);
-                        atomic_fetch_add_explicit(
-                            ((atomic_float device*)(gradPackedGaussians + (gBase + 1u))),
-                            -gradDy, memory_order_relaxed);
-                    }
-
-                    trans *= (1.0 - alpha);
-                    if (trans < 0.0001) {
-                        break;
-                    }
-                }
-                """,
-            atomicOutputs: true
-        )
+        guard
+            let forwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_tile_global_forward_mlx"),
+            let backwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_tile_global_backward_mlx")
+        else {
+            Logger.shared.debug(
+                "Slang global tile kernels are unavailable. Per-tile path is used.")
+            return nil
+        }
 
         let pixelCount = W * H
         let forward: ([MLXArray]) -> [MLXArray] = { inputs in
@@ -828,59 +569,20 @@ class GaussianRenderer {
         try? SlangKernelSpecLoader.loadKernel(named: "compute_tile_ranges_mlx")
     }()
 
-    private lazy var computeTileCountsFromRangesKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
-            name: "compute_tile_counts_from_ranges_v1",
-            inputNames: ["tileRanges", "tileCountArgs"],
-            outputNames: ["tileCounts"],
-            source: """
-                uint tileIndex = thread_position_in_grid.x;
-                uint numTiles = tileCountArgs[0];
-                if (tileIndex >= numTiles) {
-                    return;
-                }
-
-                uint start = tileRanges[tileIndex * 2];
-                uint end = tileRanges[tileIndex * 2 + 1];
-                tileCounts[tileIndex] = end > start ? (end - start) : 0u;
-                """
-        )
+    private lazy var computeTileCountsFromRangesKernel: MLXFast.MLXFastKernel? = {
+        try? SlangKernelSpecLoader.loadKernel(named: "compute_tile_counts_from_ranges_mlx")
     }()
 
-    private lazy var buildPackedTileIndicesKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
-            name: "build_packed_tile_indices_v1",
-            inputNames: ["sortedGaussIdx", "tileRanges", "packArgs"],
-            outputNames: ["packedTileIndices"],
-            source: """
-                uint linear = thread_position_in_grid.x;
-                uint numTiles = packArgs[0];
-                uint maxTilePairs = packArgs[1];
-                uint total = numTiles * maxTilePairs;
-                if (linear >= total) {
-                    return;
-                }
-
-                uint tileIndex = linear / maxTilePairs;
-                uint slot = linear - tileIndex * maxTilePairs;
-
-                uint start = tileRanges[tileIndex * 2];
-                uint end = tileRanges[tileIndex * 2 + 1];
-                uint count = end > start ? (end - start) : 0u;
-
-                if (slot < count) {
-                    packedTileIndices[linear] = int(sortedGaussIdx[start + slot]);
-                } else {
-                    packedTileIndices[linear] = 0;
-                }
-                """
-        )
+    private lazy var buildPackedTileIndicesKernel: MLXFast.MLXFastKernel? = {
+        try? SlangKernelSpecLoader.loadKernel(named: "build_packed_tile_indices_mlx")
     }()
 
     private var globalTileSliceKernelsAvailable: Bool {
         countTilesPerGaussianKernel != nil
             && generateKeysKernel != nil
             && computeTileRangesKernel != nil
+            && computeTileCountsFromRangesKernel != nil
+            && buildPackedTileIndicesKernel != nil
     }
 
     private func buildGlobalTileSliceInfo(
@@ -891,7 +593,9 @@ class GaussianRenderer {
         guard
             let countTilesPerGaussianKernel,
             let generateKeysKernel,
-            let computeTileRangesKernel
+            let computeTileRangesKernel,
+            let computeTileCountsFromRangesKernel,
+            let buildPackedTileIndicesKernel
         else {
             return nil
         }

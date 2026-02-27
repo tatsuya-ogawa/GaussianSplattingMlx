@@ -1,0 +1,47 @@
+{
+  "metal": "build/slang_tile_global/build_packed_tile_indices.metal",
+  "entry": "build_packed_tile_indices",
+  "kernel_name": "build_packed_tile_indices_slang_v1",
+  "kernel_var": "build_packed_tile_indicesKernel",
+  "input_names": [
+    "bpi_sortedGaussIdx_1",
+    "bpi_tileRanges_1",
+    "bpi_packArgs_1"
+  ],
+  "output_names": [
+    "bpi_packedTileIndices_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint linear_0 = tid_0.x;\n\nuint maxTilePairs_0 = bpi_packArgs_1[int(1)];\n\nif(linear_0 >= (bpi_packArgs_1[int(0)] * maxTilePairs_0))\n{\n    return;\n}\n\nuint tileIndex_0 = linear_0 / maxTilePairs_0;\nuint slot_0 = linear_0 - tileIndex_0 * maxTilePairs_0;\nuint _S1 = tileIndex_0 * 2U;\nuint start_0 = bpi_tileRanges_1[_S1];\nuint end_0 = bpi_tileRanges_1[_S1 + 1U];\nuint count_0;\nif(end_0 > start_0)\n{\n    count_0 = end_0 - start_0;\n}\nelse\n{\n    count_0 = 0U;\n}\n\nif(slot_0 < count_0)\n{\n    *(bpi_packedTileIndices_1+linear_0) = int(bpi_sortedGaussIdx_1[start_0 + slot_0]);\n}\nelse\n{\n\n    *(bpi_packedTileIndices_1+linear_0) = int(0);\n}\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "bpi_sortedGaussIdx_1",
+      "buffer_index": 20,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "bpi_tileRanges_1",
+      "buffer_index": 21,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "bpi_packArgs_1",
+      "buffer_index": 22,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "bpi_packedTileIndices_1",
+      "buffer_index": 23,
+      "role": "output",
+      "type": "int device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_global/build_packed_tile_indices_mlx.swift"
+}

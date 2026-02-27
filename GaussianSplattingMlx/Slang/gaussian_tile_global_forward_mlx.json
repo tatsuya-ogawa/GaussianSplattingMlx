@@ -1,0 +1,68 @@
+{
+  "metal": "build/slang_tile_global/gaussian_tile_global_forward.metal",
+  "entry": "gaussian_tile_global_forward",
+  "kernel_name": "gaussian_tile_global_forward_slang_v1",
+  "kernel_var": "gaussian_tile_global_forwardKernel",
+  "input_names": [
+    "gtf_packedGaussians_1",
+    "gtf_packedTileIndices_1",
+    "gtf_tileCounts_1",
+    "gtf_renderCounts_1"
+  ],
+  "output_names": [
+    "gtf_outColor_1",
+    "gtf_outDepth_1",
+    "gtf_outAlpha_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= gtf_renderCounts_1[int(0)])\n{\n    return;\n}\n\nuint maxTilePairs_0 = gtf_renderCounts_1[int(1)];\nuint gridW_0 = gtf_renderCounts_1[int(2)];\nuint tileW_0 = gtf_renderCounts_1[int(3)];\nuint tileH_0 = gtf_renderCounts_1[int(4)];\nuint imageW_0 = gtf_renderCounts_1[int(5)];\nuint imageH_0 = gtf_renderCounts_1[int(6)];\nuint whiteBg_0 = gtf_renderCounts_1[int(7)];\n\nuint y_0 = p_0 / imageW_0;\nuint x_0 = p_0 - y_0 * imageW_0;\nif(y_0 >= imageH_0)\n{\n    return;\n}\nfloat bg_0;\n\nuint tileX_0 = x_0 / tileW_0;\nuint tileY_0 = y_0 / tileH_0;\nuint tileIndex_0 = tileY_0 * gridW_0 + tileX_0;\nuint _S1 = gtf_tileCounts_1[tileIndex_0];\nuint _S2 = tileIndex_0 * maxTilePairs_0;\n\nfloat _S3 = float(x_0);\nfloat _S4 = float(y_0);\nuint i_0 = 0U;\nfloat T_0 = 1.0;\nfloat accAlpha_0 = 0.0;\nfloat accumColorX_0 = 0.0;\nfloat accumColorY_0 = 0.0;\nfloat accumColorZ_0 = 0.0;\nfloat accumDepth_0 = 0.0;\nfor(;;)\n{\n    if(i_0 < _S1)\n    {\n    }\n    else\n    {\n        break;\n    }\n\n    uint gBase_0 = uint(gtf_packedTileIndices_1[_S2 + i_0]) * 11U;\n    float colorX_0 = gtf_packedGaussians_1[gBase_0 + 6U];\n    float colorY_0 = gtf_packedGaussians_1[gBase_0 + 7U];\n    float colorZ_0 = gtf_packedGaussians_1[gBase_0 + 8U];\n\n    float depth_0 = gtf_packedGaussians_1[gBase_0 + 10U];\n\n    float dx_0 = _S3 - gtf_packedGaussians_1[gBase_0];\n    float dy_0 = _S4 - gtf_packedGaussians_1[gBase_0 + 1U];\n    float dxdy_0 = dx_0 * dy_0;\n\n    float raw_0 = exp(-0.5 * (dx_0 * dx_0 * gtf_packedGaussians_1[gBase_0 + 2U] + dy_0 * dy_0 * gtf_packedGaussians_1[gBase_0 + 5U] + dxdy_0 * gtf_packedGaussians_1[gBase_0 + 3U] + dxdy_0 * gtf_packedGaussians_1[gBase_0 + 4U])) * gtf_packedGaussians_1[gBase_0 + 9U];\n    if(raw_0 > 0.99000000953674316)\n    {\n        bg_0 = 0.99000000953674316;\n    }\n    else\n    {\n        bg_0 = raw_0;\n    }\n\n    float contrib_0 = T_0 * bg_0;\n    float accAlpha_1 = accAlpha_0 + contrib_0;\n    float accumColorX_1 = accumColorX_0 + contrib_0 * colorX_0;\n    float accumColorY_1 = accumColorY_0 + contrib_0 * colorY_0;\n    float accumColorZ_1 = accumColorZ_0 + contrib_0 * colorZ_0;\n    float accumDepth_1 = accumDepth_0 + contrib_0 * depth_0;\n    float T_1 = T_0 * (1.0 - bg_0);\n    if(T_1 < 0.00009999999747379)\n    {\n        accAlpha_0 = accAlpha_1;\n        accumColorX_0 = accumColorX_1;\n        accumColorY_0 = accumColorY_1;\n        accumColorZ_0 = accumColorZ_1;\n        accumDepth_0 = accumDepth_1;\n\n        break;\n    }\n    i_0 = i_0 + 1U;\n    T_0 = T_1;\n    accAlpha_0 = accAlpha_1;\n    accumColorX_0 = accumColorX_1;\n    accumColorY_0 = accumColorY_1;\n    accumColorZ_0 = accumColorZ_1;\n    accumDepth_0 = accumDepth_1;\n}\nif(whiteBg_0 != 0U)\n{\n    bg_0 = 1.0 - accAlpha_0;\n}\nelse\n{\n    bg_0 = 0.0;\n}\nuint colorBase_0 = p_0 * 3U;\n*(gtf_outColor_1+colorBase_0) = accumColorX_0 + bg_0;\n*(gtf_outColor_1+(colorBase_0 + 1U)) = accumColorY_0 + bg_0;\n*(gtf_outColor_1+(colorBase_0 + 2U)) = accumColorZ_0 + bg_0;\n*(gtf_outDepth_1+p_0) = accumDepth_0;\n*(gtf_outAlpha_1+p_0) = accAlpha_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "gtf_packedGaussians_1",
+      "buffer_index": 24,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gtf_packedTileIndices_1",
+      "buffer_index": 25,
+      "role": "input",
+      "type": "int device*"
+    },
+    {
+      "name": "gtf_tileCounts_1",
+      "buffer_index": 26,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gtf_renderCounts_1",
+      "buffer_index": 27,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gtf_outColor_1",
+      "buffer_index": 28,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "gtf_outDepth_1",
+      "buffer_index": 29,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "gtf_outAlpha_1",
+      "buffer_index": 30,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_global/gaussian_tile_global_forward_mlx.swift"
+}

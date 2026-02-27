@@ -1,0 +1,75 @@
+{
+  "metal": "build/slang_tile_global/gaussian_tile_global_backward.metal",
+  "entry": "gaussian_tile_global_backward",
+  "kernel_name": "gaussian_tile_global_backward_slang_v1",
+  "kernel_var": "gaussian_tile_global_backwardKernel",
+  "input_names": [
+    "gtb_packedGaussians_1",
+    "gtb_packedTileIndices_1",
+    "gtb_tileCounts_1",
+    "gtb_cotColor_1",
+    "gtb_cotDepth_1",
+    "gtb_cotAlpha_1",
+    "gtb_renderCounts_1"
+  ],
+  "output_names": [
+    "gtb_gradPackedGaussians_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= gtb_renderCounts_1[int(0)])\n{\n    return;\n}\n\nuint maxTilePairs_0 = gtb_renderCounts_1[int(1)];\nuint gridW_0 = gtb_renderCounts_1[int(2)];\nuint tileW_0 = gtb_renderCounts_1[int(3)];\nuint tileH_0 = gtb_renderCounts_1[int(4)];\nuint imageW_0 = gtb_renderCounts_1[int(5)];\nuint imageH_0 = gtb_renderCounts_1[int(6)];\nuint whiteBg_0 = gtb_renderCounts_1[int(7)];\n\nuint y_0 = p_0 / imageW_0;\nuint x_0 = p_0 - y_0 * imageW_0;\nif(y_0 >= imageH_0)\n{\n    return;\n}\n\nuint tileX_0 = x_0 / tileW_0;\nuint tileY_0 = y_0 / tileH_0;\nuint tileIndex_0 = tileY_0 * gridW_0 + tileX_0;\nuint count_0 = gtb_tileCounts_1[tileIndex_0];\nif(count_0 == 0U)\n{\n    return;\n}\nuint _S1 = tileIndex_0 * maxTilePairs_0;\n\nuint colorBaseP_0 = p_0 * 3U;\nfloat gColorX_0 = gtb_cotColor_1[colorBaseP_0];\nfloat gColorY_0 = gtb_cotColor_1[colorBaseP_0 + 1U];\nfloat gColorZ_0 = gtb_cotColor_1[colorBaseP_0 + 2U];\nfloat _S2 = gtb_cotDepth_1[p_0];\nfloat _S3 = gtb_cotAlpha_1[p_0];\nfloat _S4;\nif(whiteBg_0 != 0U)\n{\n    _S4 = - (gColorX_0 + gColorY_0 + gColorZ_0);\n}\nelse\n{\n    _S4 = 0.0;\n}\nfloat prefixWeighted_0;\n\nfloat _S5 = float(x_0);\nfloat _S6 = float(y_0);\nuint i_0 = 0U;\nfloat trans_0 = 1.0;\nfloat weightedSum_0 = 0.0;\n\nfor(;;)\n{\n    if(i_0 < count_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n\n    uint gBase_0 = uint(gtb_packedTileIndices_1[_S1 + i_0]) * 11U;\n    float colorX_0 = gtb_packedGaussians_1[gBase_0 + 6U];\n    float colorY_0 = gtb_packedGaussians_1[gBase_0 + 7U];\n    float colorZ_0 = gtb_packedGaussians_1[gBase_0 + 8U];\n\n    float depth_0 = gtb_packedGaussians_1[gBase_0 + 10U];\n\n    float dx_0 = _S5 - gtb_packedGaussians_1[gBase_0];\n    float dy_0 = _S6 - gtb_packedGaussians_1[gBase_0 + 1U];\n    float dxdy_0 = dx_0 * dy_0;\n\n    float raw_0 = exp(-0.5 * (dx_0 * dx_0 * gtb_packedGaussians_1[gBase_0 + 2U] + dy_0 * dy_0 * gtb_packedGaussians_1[gBase_0 + 5U] + dxdy_0 * gtb_packedGaussians_1[gBase_0 + 3U] + dxdy_0 * gtb_packedGaussians_1[gBase_0 + 4U])) * gtb_packedGaussians_1[gBase_0 + 9U];\n    if(raw_0 > 0.99000000953674316)\n    {\n        prefixWeighted_0 = 0.99000000953674316;\n    }\n    else\n    {\n        prefixWeighted_0 = raw_0;\n    }\n\n    float weightedSum_1 = weightedSum_0 + (gColorX_0 * colorX_0 + gColorY_0 * colorY_0 + gColorZ_0 * colorZ_0 + _S2 * depth_0 + _S3 + _S4) * (trans_0 * prefixWeighted_0);\n\n    float trans_1 = trans_0 * (1.0 - prefixWeighted_0);\n    if(trans_1 < 0.00009999999747379)\n    {\n        weightedSum_0 = weightedSum_1;\n\n        break;\n    }\n    i_0 = i_0 + 1U;\n    trans_0 = trans_1;\n    weightedSum_0 = weightedSum_1;\n}\ni_0 = 0U;\ntrans_0 = 1.0;\nprefixWeighted_0 = 0.0;\nfor(;;)\n{\n    if(i_0 < count_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n\n    uint gBase_1 = uint(gtb_packedTileIndices_1[_S1 + i_0]) * 11U;\n\n    uint _S7 = gBase_1 + 1U;\n    uint _S8 = gBase_1 + 2U;\n    float c00_0 = gtb_packedGaussians_1[_S8];\n    uint _S9 = gBase_1 + 3U;\n    float c01_0 = gtb_packedGaussians_1[_S9];\n    uint _S10 = gBase_1 + 4U;\n    float c10_0 = gtb_packedGaussians_1[_S10];\n    uint _S11 = gBase_1 + 5U;\n    float c11_0 = gtb_packedGaussians_1[_S11];\n    uint _S12 = gBase_1 + 6U;\n    float colorX_1 = gtb_packedGaussians_1[_S12];\n    uint _S13 = gBase_1 + 7U;\n    float colorY_1 = gtb_packedGaussians_1[_S13];\n    uint _S14 = gBase_1 + 8U;\n    float colorZ_1 = gtb_packedGaussians_1[_S14];\n    uint _S15 = gBase_1 + 9U;\n    uint _S16 = gBase_1 + 10U;\n    float depth_1 = gtb_packedGaussians_1[_S16];\n\n    float dx_1 = _S5 - gtb_packedGaussians_1[gBase_1];\n    float dy_1 = _S6 - gtb_packedGaussians_1[_S7];\n    float dxdy_1 = dx_1 * dy_1;\n\n    float expVal_0 = exp(-0.5 * (dx_1 * dx_1 * c00_0 + dy_1 * dy_1 * c11_0 + dxdy_1 * c01_0 + dxdy_1 * c10_0));\n    float raw_1 = expVal_0 * gtb_packedGaussians_1[_S15];\n    float alpha_0;\n    if(raw_1 > 0.99000000953674316)\n    {\n        alpha_0 = 0.99000000953674316;\n    }\n    else\n    {\n        alpha_0 = raw_1;\n    }\n    float contrib_0 = trans_0 * alpha_0;\n\n    float c_0 = gColorX_0 * colorX_1 + gColorY_0 * colorY_1 + gColorZ_0 * colorZ_1 + _S2 * depth_1 + _S3 + _S4;\n    float prefixWeighted_1 = prefixWeighted_0 + c_0 * contrib_0;\n\n    float suffixWeighted_0 = weightedSum_0 - prefixWeighted_1;\n    float denom_0 = 1.0 - alpha_0;\n    float denom_1;\n    if(denom_0 < 9.99999997475242708e-07)\n    {\n        denom_1 = 9.99999997475242708e-07;\n    }\n    else\n    {\n        denom_1 = denom_0;\n    }\n\n    float gradAlpha_0 = c_0 * trans_0 - suffixWeighted_0 / denom_1;\n\n    float _S17 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S16)), _S2 * contrib_0, memory_order_relaxed);\n    float _S18 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S12)), gColorX_0 * contrib_0, memory_order_relaxed);\n    float _S19 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S13)), gColorY_0 * contrib_0, memory_order_relaxed);\n    float _S20 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S14)), gColorZ_0 * contrib_0, memory_order_relaxed);\n\n    if(raw_1 <= 0.99000000953674316)\n    {\n        float _S21 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S15)), gradAlpha_0 * expVal_0, memory_order_relaxed);\n\n        float gradExponent_0 = gradAlpha_0 * raw_1;\n        float _S22 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S8)), gradExponent_0 * (-0.5 * dx_1 * dx_1), memory_order_relaxed);\n        float gradOffDiag_0 = gradExponent_0 * (-0.5 * dxdy_1);\n        float _S23 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S9)), gradOffDiag_0, memory_order_relaxed);\n        float _S24 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S10)), gradOffDiag_0, memory_order_relaxed);\n        float _S25 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S11)), gradExponent_0 * (-0.5 * dy_1 * dy_1), memory_order_relaxed);\n\n        float c01sum_0 = c01_0 + c10_0;\n        float gradDy_0 = gradExponent_0 * (- dy_1 * c11_0 - 0.5 * dx_1 * c01sum_0);\n        float _S26 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+gBase_1)), - (gradExponent_0 * (- dx_1 * c00_0 - 0.5 * dy_1 * c01sum_0)), memory_order_relaxed);\n\n        float _S27 = atomic_fetch_add_explicit(((atomic_float device*)(gtb_gradPackedGaussians_1+_S7)), - gradDy_0, memory_order_relaxed);\n    }\n    float trans_2 = trans_0 * denom_0;\n    if(trans_2 < 0.00009999999747379)\n    {\n        break;\n    }\n    i_0 = i_0 + 1U;\n    trans_0 = trans_2;\n    prefixWeighted_0 = prefixWeighted_1;\n}\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "gtb_packedGaussians_1",
+      "buffer_index": 31,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gtb_packedTileIndices_1",
+      "buffer_index": 32,
+      "role": "input",
+      "type": "int device*"
+    },
+    {
+      "name": "gtb_tileCounts_1",
+      "buffer_index": 33,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gtb_cotColor_1",
+      "buffer_index": 34,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gtb_cotDepth_1",
+      "buffer_index": 35,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gtb_cotAlpha_1",
+      "buffer_index": 36,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gtb_renderCounts_1",
+      "buffer_index": 37,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gtb_gradPackedGaussians_1",
+      "buffer_index": 38,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_global/gaussian_tile_global_backward_mlx.swift"
+}
