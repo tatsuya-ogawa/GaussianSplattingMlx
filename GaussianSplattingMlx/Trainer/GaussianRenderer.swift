@@ -125,6 +125,7 @@ private struct GlobalTileSliceInfo {
     let packedTileIndices: MLXArray
     let tileCounts: [UInt32]
     let maxTilePairs: Int
+    let activeTileIndices: [Int]
 }
 
 class GaussianRenderer {
@@ -525,9 +526,9 @@ class GaussianRenderer {
                 uint count = end > start ? (end - start) : 0u;
 
                 if (slot < count) {
-                    packedTileIndices[linear] = sortedGaussIdx[start + slot];
+                    packedTileIndices[linear] = int(sortedGaussIdx[start + slot]);
                 } else {
-                    packedTileIndices[linear] = 0u;
+                    packedTileIndices[linear] = -1;
                 }
                 """
         )
@@ -556,9 +557,10 @@ class GaussianRenderer {
         let numTiles = gridW * gridH
         if gaussianCount == 0 {
             return GlobalTileSliceInfo(
-                packedTileIndices: MLXArray.zeros([0], dtype: .uint32),
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: [UInt32](repeating: 0, count: numTiles),
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                activeTileIndices: []
             )
         }
 
@@ -590,9 +592,10 @@ class GaussianRenderer {
         let totalPairs = MLX.stopGradient(cumsum[gaussianCount - 1]).item(Int.self)
         if totalPairs <= 0 {
             return GlobalTileSliceInfo(
-                packedTileIndices: MLXArray.zeros([0], dtype: .uint32),
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: [UInt32](repeating: 0, count: numTiles),
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                activeTileIndices: []
             )
         }
 
@@ -652,9 +655,10 @@ class GaussianRenderer {
         let maxTilePairs = MLX.stopGradient(MLX.max(tileCountsArray)).item(Int.self)
         if maxTilePairs <= 0 {
             return GlobalTileSliceInfo(
-                packedTileIndices: MLXArray.zeros([0], dtype: .uint32),
+                packedTileIndices: MLXArray.zeros([0], dtype: .int32),
                 tileCounts: [UInt32](repeating: 0, count: numTiles),
-                maxTilePairs: 0
+                maxTilePairs: 0,
+                activeTileIndices: []
             )
         }
 
@@ -665,15 +669,20 @@ class GaussianRenderer {
                 grid: (max(numTiles * maxTilePairs, 1), 1, 1),
                 threadGroup: (min(256, max(numTiles * maxTilePairs, 1)), 1, 1),
                 outputShapes: [[numTiles * maxTilePairs]],
-                outputDTypes: [.uint32],
-                initValue: 0
+                outputDTypes: [.int32],
+                initValue: -1
             )[0]
         )
+        let tileCountsCpu = tileCountsArray.asArray(UInt32.self)
+        let activeTileIndices = tileCountsCpu.enumerated().compactMap { index, count in
+            count > 0 ? index : nil
+        }
 
         return GlobalTileSliceInfo(
             packedTileIndices: packedTileIndices,
-            tileCounts: tileCountsArray.asArray(UInt32.self),
-            maxTilePairs: maxTilePairs
+            tileCounts: tileCountsCpu,
+            maxTilePairs: maxTilePairs,
+            activeTileIndices: activeTileIndices
         )
     }
 
@@ -1484,10 +1493,20 @@ class GaussianRenderer {
             globalTileSliceInfo = nil
         }
 
-        let render_color = MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
+        let render_color = self.whiteBackground
+            ? MLXArray.ones(self.pix_coord.shape[0..<2] + [3])
+            : MLXArray.zeros(self.pix_coord.shape[0..<2] + [3])
         let render_depth = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
         let render_alpha = MLXArray.zeros(self.pix_coord.shape[0..<2] + [1])
-        for (tileIndex, tile) in tileEntries.enumerated() {
+        let tileIndicesToRender: [Int]
+        if let globalTileSliceInfo {
+            tileIndicesToRender = globalTileSliceInfo.activeTileIndices
+        } else {
+            tileIndicesToRender = Array(tileEntries.indices)
+        }
+
+        for tileIndex in tileIndicesToRender {
+            let tile = tileEntries[tileIndex]
             Logger.shared.debug("before renderTile")
             let precomputedIndices: MLXArray?
             if let globalTileSliceInfo {
@@ -1496,7 +1515,7 @@ class GaussianRenderer {
                     let rowStart = tileIndex * globalTileSliceInfo.maxTilePairs
                     precomputedIndices = MLX.stopGradient(
                         globalTileSliceInfo.packedTileIndices[rowStart..<(rowStart + tileCount)]
-                    ).asType(.int32)
+                    )
                 } else {
                     precomputedIndices = Self.emptyInt32Indices
                 }
