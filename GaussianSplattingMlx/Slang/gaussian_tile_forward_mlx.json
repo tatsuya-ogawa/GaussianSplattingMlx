@@ -1,5 +1,5 @@
 {
-  "metal": "build/slang_tile_manual/gaussian_tile_forward_only.metal",
+  "metal": "build/slang_tile/gaussian_tile_forward.metal",
   "entry": "gaussian_tile_forward",
   "kernel_name": "gaussian_tile_forward_slang_v2",
   "kernel_var": "gaussian_tile_forwardKernel",
@@ -17,72 +17,74 @@
     "outDepth_1",
     "outAlpha_1"
   ],
-  "source": "uint p = thread_position_in_grid.x;\nint pixelCount = int(counts_1[0]);\nif (int(p) >= pixelCount) {\n    return;\n}\nint gaussianCount = int(counts_1[1]);\nbool whiteBg = counts_1[2] != 0;\n\nfloat px = tileCoord_1[p * 2 + 0];\nfloat py = tileCoord_1[p * 2 + 1];\n\nfloat T = 1.0f;\nfloat accAlpha = 0.0f;\nfloat accumColorX = 0.0f;\nfloat accumColorY = 0.0f;\nfloat accumColorZ = 0.0f;\nfloat accumDepth = 0.0f;\n\nfor (int i = 0; i < gaussianCount; ++i) {\n    float dx = px - sortedMeans2d_1[i * 2 + 0];\n    float dy = py - sortedMeans2d_1[i * 2 + 1];\n    uint conicBase = uint(i) * 4;\n    float exponent = -0.5f * (\n        dx * dx * sortedConic_1[conicBase + 0] +\n        dy * dy * sortedConic_1[conicBase + 3] +\n        dx * dy * sortedConic_1[conicBase + 1] +\n        dx * dy * sortedConic_1[conicBase + 2]\n    );\n    float alpha = exp(exponent) * sortedOpacity_1[i];\n    if (alpha > 0.99f) {\n        alpha = 0.99f;\n    }\n\n    float contrib = T * alpha;\n    accAlpha += contrib;\n    uint colorBase = uint(i) * 3;\n    accumColorX += contrib * sortedColor_1[colorBase + 0];\n    accumColorY += contrib * sortedColor_1[colorBase + 1];\n    accumColorZ += contrib * sortedColor_1[colorBase + 2];\n    accumDepth += contrib * sortedDepths_1[i];\n    T *= (1.0f - alpha);\n\n    if (T < 1e-4f) {\n        break;\n    }\n}\n\nfloat bg = whiteBg ? (1.0f - accAlpha) : 0.0f;\noutColor_1[p * 3 + 0] = accumColorX + bg;\noutColor_1[p * 3 + 1] = accumColorY + bg;\noutColor_1[p * 3 + 2] = accumColorZ + bg;\noutDepth_1[p] = accumDepth;\noutAlpha_1[p] = accAlpha;",
-  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;\n\n",
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint3 gtid_0 = thread_position_in_threadgroup;\nthreadgroup array<float, int(128)> gsMeansX_1;\n\nthreadgroup array<float, int(128)> gsMeansY_1;\n\nthreadgroup array<float, int(128)> gsConic00_1;\n\nthreadgroup array<float, int(128)> gsConic01_1;\n\nthreadgroup array<float, int(128)> gsConic10_1;\n\nthreadgroup array<float, int(128)> gsConic11_1;\n\nthreadgroup array<float, int(128)> gsOpacity_1;\n\nthreadgroup array<float, int(128)> gsColorX_1;\n\nthreadgroup array<float, int(128)> gsColorY_1;\n\nthreadgroup array<float, int(128)> gsColorZ_1;\n\nthreadgroup array<float, int(128)> gsDepth_1;\n\nuint p_0 = tid_0.x;\nuint _S1 = gtid_0.x;\n\nuint _S2 = counts_1[int(1)];\nuint whiteBg_0 = counts_1[int(2)];\nbool activePixel_0 = p_0 < counts_1[int(0)];\nfloat px_0;\nfloat py_0;\n\nif(activePixel_0)\n{\n    uint _S3 = p_0 * 2U;\n    float _S4 = tileCoord_1[_S3 + 1U];\n    px_0 = tileCoord_1[_S3];\n    py_0 = _S4;\n}\nelse\n{\n    px_0 = 0.0;\n    py_0 = 0.0;\n}\nfloat T_0;\nbool done_0 = !activePixel_0;\nuint chunkStart_0 = 0U;\nfloat T_1 = 1.0;\nfloat accAlpha_0 = 0.0;\nfloat accumColorX_0 = 0.0;\nfloat accumColorY_0 = 0.0;\nfloat accumColorZ_0 = 0.0;\nfloat accumDepth_0 = 0.0;\nfor(;;)\n{\n    if(chunkStart_0 < _S2)\n    {\n    }\n    else\n    {\n        break;\n    }\n    uint loadIndex_0 = chunkStart_0 + _S1;\n    if(loadIndex_0 < _S2)\n    {\n        uint meansBase_0 = loadIndex_0 * 2U;\n        uint conicBase_0 = loadIndex_0 * 4U;\n        uint colorBase_0 = loadIndex_0 * 3U;\n        gsMeansX_1[_S1] = sortedMeans2d_1[meansBase_0];\n        gsMeansY_1[_S1] = sortedMeans2d_1[meansBase_0 + 1U];\n        gsConic00_1[_S1] = sortedConic_1[conicBase_0];\n        gsConic01_1[_S1] = sortedConic_1[conicBase_0 + 1U];\n        gsConic10_1[_S1] = sortedConic_1[conicBase_0 + 2U];\n        gsConic11_1[_S1] = sortedConic_1[conicBase_0 + 3U];\n        gsOpacity_1[_S1] = sortedOpacity_1[loadIndex_0];\n        gsColorX_1[_S1] = sortedColor_1[colorBase_0];\n        gsColorY_1[_S1] = sortedColor_1[colorBase_0 + 1U];\n        gsColorZ_1[_S1] = sortedColor_1[colorBase_0 + 2U];\n        gsDepth_1[_S1] = sortedDepths_1[loadIndex_0];\n    }\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n\n    if(!done_0)\n    {\n        bool done_1;\n        float accumDepth_1;\n        float accumColorZ_1;\n        float accumColorY_1;\n        float accumColorX_1;\n        float accAlpha_1;\n        float T_2;\n\n        uint _S5 = min(chunkStart_0 + 128U, _S2);\n        uint i_0 = chunkStart_0;\n        T_0 = T_1;\n        float accAlpha_2 = accAlpha_0;\n        float accumColorX_2 = accumColorX_0;\n        float accumColorY_2 = accumColorY_0;\n        float accumColorZ_2 = accumColorZ_0;\n        float accumDepth_2 = accumDepth_0;\n        for(;;)\n        {\n            if(i_0 < _S5)\n            {\n            }\n            else\n            {\n                done_1 = done_0;\n                T_2 = T_0;\n                accAlpha_1 = accAlpha_2;\n                accumColorX_1 = accumColorX_2;\n                accumColorY_1 = accumColorY_2;\n                accumColorZ_1 = accumColorZ_2;\n                accumDepth_1 = accumDepth_2;\n                break;\n            }\n            uint local_0 = i_0 - chunkStart_0;\n            float dx_0 = px_0 - gsMeansX_1[local_0];\n            float dy_0 = py_0 - gsMeansY_1[local_0];\n\n            float _S6 = dx_0 * dy_0;\n\n            float alpha_0 = exp(-0.5 * (dx_0 * dx_0 * gsConic00_1[local_0] + dy_0 * dy_0 * gsConic11_1[local_0] + _S6 * gsConic01_1[local_0] + _S6 * gsConic10_1[local_0])) * gsOpacity_1[local_0];\n            if(alpha_0 > 0.99000000953674316)\n            {\n                T_2 = 0.99000000953674316;\n            }\n            else\n            {\n                T_2 = alpha_0;\n            }\n            float contrib_0 = T_0 * T_2;\n            float accAlpha_3 = accAlpha_2 + contrib_0;\n            float accumColorX_3 = accumColorX_2 + contrib_0 * gsColorX_1[local_0];\n            float accumColorY_3 = accumColorY_2 + contrib_0 * gsColorY_1[local_0];\n            float accumColorZ_3 = accumColorZ_2 + contrib_0 * gsColorZ_1[local_0];\n            float accumDepth_3 = accumDepth_2 + contrib_0 * gsDepth_1[local_0];\n            float T_3 = T_0 * (1.0 - T_2);\n\n            if(T_3 < 0.00009999999747379)\n            {\n                done_1 = true;\n                T_2 = T_3;\n                accAlpha_1 = accAlpha_3;\n                accumColorX_1 = accumColorX_3;\n                accumColorY_1 = accumColorY_3;\n                accumColorZ_1 = accumColorZ_3;\n                accumDepth_1 = accumDepth_3;\n\n                break;\n            }\n            i_0 = i_0 + 1U;\n            T_0 = T_3;\n            accAlpha_2 = accAlpha_3;\n            accumColorX_2 = accumColorX_3;\n            accumColorY_2 = accumColorY_3;\n            accumColorZ_2 = accumColorZ_3;\n            accumDepth_2 = accumDepth_3;\n        }\n        done_0 = done_1;\n        T_1 = T_2;\n        accAlpha_0 = accAlpha_1;\n        accumColorX_0 = accumColorX_1;\n        accumColorY_0 = accumColorY_1;\n        accumColorZ_0 = accumColorZ_1;\n        accumDepth_0 = accumDepth_1;\n    }\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n    chunkStart_0 = chunkStart_0 + 128U;\n}\nif(activePixel_0)\n{\n    if(whiteBg_0 != 0U)\n    {\n        T_0 = 1.0 - accAlpha_0;\n    }\n    else\n    {\n        T_0 = 0.0;\n    }\n    uint _S7 = p_0 * 3U;\n    *(outColor_1+_S7) = accumColorX_0 + T_0;\n    *(outColor_1+(_S7 + 1U)) = accumColorY_0 + T_0;\n    *(outColor_1+(_S7 + 2U)) = accumColorZ_0 + T_0;\n    *(outDepth_1+p_0) = accumDepth_0;\n    *(outAlpha_1+p_0) = accAlpha_0;\n}\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
   "buffer_parameters": [
     {
       "name": "tileCoord_1",
       "buffer_index": 0,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "sortedDepths_1",
       "buffer_index": 1,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "sortedMeans2d_1",
       "buffer_index": 2,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "sortedConic_1",
       "buffer_index": 3,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "sortedOpacity_1",
       "buffer_index": 4,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "sortedColor_1",
       "buffer_index": 5,
       "role": "input",
-      "type": "const device float*"
+      "type": "float device*"
     },
     {
       "name": "counts_1",
-      "buffer_index": 6,
+      "buffer_index": 9,
       "role": "input",
-      "type": "const device uint*"
+      "type": "uint device*"
     },
     {
       "name": "outColor_1",
-      "buffer_index": 7,
+      "buffer_index": 10,
       "role": "output",
-      "type": "device float*"
+      "type": "float device*"
     },
     {
       "name": "outDepth_1",
-      "buffer_index": 8,
+      "buffer_index": 11,
       "role": "output",
-      "type": "device float*"
+      "type": "float device*"
     },
     {
       "name": "outAlpha_1",
-      "buffer_index": 9,
+      "buffer_index": 12,
       "role": "output",
-      "type": "device float*"
+      "type": "float device*"
     }
   ],
-  "attribute_aliases": [],
-  "atomic_outputs": false,
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;",
+    "uint3 gtid_0 = thread_position_in_threadgroup;"
+  ],
   "line_directives_kept": false,
-  "swift_out": "build/slang_tile_manual/gaussian_tile_forward_mlx.swift"
+  "swift_out": "build/slang_tile/gaussian_tile_forward_mlx.swift"
 }

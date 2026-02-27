@@ -1,0 +1,82 @@
+{
+  "metal": "build/slang_tile_global/generate_keys.metal",
+  "entry": "generate_keys",
+  "kernel_name": "generate_keys_slang_v1",
+  "kernel_var": "generate_keysKernel",
+  "input_names": [
+    "gk_depths_1",
+    "gk_rectMin_1",
+    "gk_rectMax_1",
+    "gk_radii_1",
+    "gk_offsets_1",
+    "gk_counts_1"
+  ],
+  "output_names": [
+    "gk_keysHigh_1",
+    "gk_keysLow_1",
+    "gk_gaussIdx_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint idx_0 = tid_0.x;\n\nuint tileW_0 = gk_counts_1[int(1)];\nuint tileH_0 = gk_counts_1[int(2)];\nuint imageW_0 = gk_counts_1[int(3)];\nuint imageH_0 = gk_counts_1[int(4)];\n\nif(idx_0 >= gk_counts_1[int(0)])\n{\n    return;\n}\n\nif(gk_radii_1[idx_0] <= 0.0)\n{\n    return;\n}\n\nuint _S1 = (as_type<uint>((gk_depths_1[idx_0])));\n\nuint _S2 = idx_0 * 2U;\nuint _S3 = _S2 + 1U;\n\nfloat _S4 = float(tileW_0);\nint tMinX_0 = int(floor(gk_rectMin_1[_S2] / _S4));\nfloat _S5 = float(tileH_0);\nint tMinY_0 = int(floor(gk_rectMin_1[_S3] / _S5));\nint tMaxX_0 = int(floor(gk_rectMax_1[_S2] / _S4)) + int(1);\nint tMaxY_0 = int(floor(gk_rectMax_1[_S3] / _S5)) + int(1);\n\nuint _S6 = (imageW_0 + tileW_0 - 1U) / tileW_0;\nint gridW_0 = int(_S6);\nuint _S7 = (imageH_0 + tileH_0 - 1U) / tileH_0;\nint gridH_0 = int(_S7);\n\nint _S8 = max(int(0), min(tMinX_0, gridW_0));\n\nint _S9 = max(int(0), min(tMaxX_0, gridW_0));\nint _S10 = max(int(0), min(tMaxY_0, gridH_0));\n\nuint _S11 = gk_offsets_1[idx_0];\nint ty_0 = max(int(0), min(tMinY_0, gridH_0));\nuint offset_0 = _S11;\n\nfor(;;)\n{\n    if(ty_0 < _S10)\n    {\n    }\n    else\n    {\n        break;\n    }\n    int tx_0 = _S8;\n\n    for(;;)\n    {\n        if(tx_0 < _S9)\n        {\n        }\n        else\n        {\n            break;\n        }\n\n        *(gk_keysHigh_1+offset_0) = uint(ty_0 * gridW_0 + tx_0);\n        *(gk_keysLow_1+offset_0) = _S1;\n        *(gk_gaussIdx_1+offset_0) = idx_0;\n        uint _S12 = offset_0 + 1U;\n        tx_0 = tx_0 + int(1);\n        offset_0 = _S12;\n    }\n    ty_0 = ty_0 + int(1);\n}\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "gk_depths_1",
+      "buffer_index": 5,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gk_rectMin_1",
+      "buffer_index": 6,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gk_rectMax_1",
+      "buffer_index": 7,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gk_radii_1",
+      "buffer_index": 8,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "gk_offsets_1",
+      "buffer_index": 9,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gk_counts_1",
+      "buffer_index": 10,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "gk_keysHigh_1",
+      "buffer_index": 11,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "gk_keysLow_1",
+      "buffer_index": 12,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "gk_gaussIdx_1",
+      "buffer_index": 13,
+      "role": "output",
+      "type": "uint device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_global/generate_keys_mlx.swift"
+}
