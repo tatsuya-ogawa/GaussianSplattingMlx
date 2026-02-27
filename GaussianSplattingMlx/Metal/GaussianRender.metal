@@ -172,8 +172,8 @@ kernel void assignGaussiansToTiles(
             uint assignmentIndex = atomic_fetch_add_explicit(&tileCounts[tileIndex], 1, memory_order_relaxed);
             
             // Store assignment (would need proper indexing in practice)
-            uint globalAssignmentIndex = tileIndex * 1024 + assignmentIndex; // Assuming max 1024 gaussians per tile
-            if (assignmentIndex < 1024) {
+            uint globalAssignmentIndex = tileIndex * 16384 + assignmentIndex; // Assuming max 16384 gaussians per tile
+            if (assignmentIndex < 16384) {
                 tileAssignments[globalAssignmentIndex] = id;
             }
         }

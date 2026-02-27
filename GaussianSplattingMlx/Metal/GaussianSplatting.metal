@@ -218,14 +218,14 @@ kernel void renderTiles(
     
     uint2 tileCoord = pixelCoord / tileSize;
     uint tileIndex = tileCoord.y * ((imageSize.x + tileSize.x - 1) / tileSize.x) + tileCoord.x;
-    uint tileCount = min(tileCounts[tileIndex], 1024u);
+    uint tileCount = min(tileCounts[tileIndex], 16384u);
     
     float3 accumulatedColor = float3(0.0f);
     float accumulatedAlpha = 0.0f;
     float T = 1.0f;
     
     for (uint i = 0; i < tileCount && T > 0.001f; i++) {
-        uint gaussianIndex = tileAssignments[tileIndex * 1024 + i];
+        uint gaussianIndex = tileAssignments[tileIndex * 16384 + i];
         ProjectedGaussian gaussian = sortedGaussians[gaussianIndex];
         if (gaussian.alpha <= 0.0f) continue;
         

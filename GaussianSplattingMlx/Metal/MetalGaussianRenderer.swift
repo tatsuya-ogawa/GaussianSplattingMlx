@@ -193,7 +193,8 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         
         // Tile buffers (assuming max 4K resolution with 64x64 tiles = ~4096 tiles)
         let maxTiles = 4096
-        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * 1024, options: .storageModeShared)
+        let maxGaussiansPerTile = 16384
+        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * maxGaussiansPerTile, options: .storageModeShared)
         tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles, options: .storageModeShared)
     }
     
