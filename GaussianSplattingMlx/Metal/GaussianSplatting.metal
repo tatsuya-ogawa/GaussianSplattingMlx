@@ -212,20 +212,21 @@ kernel void renderTiles(
     texture2d<float, access::write> outputImage [[texture(0)]],
     constant uint2& imageSize [[buffer(3)]],
     constant uint2& tileSize [[buffer(4)]],
+    constant uint& maxGaussiansPerTile [[buffer(5)]],
     uint2 pixelCoord [[thread_position_in_grid]]
 ) {
     if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
     
     uint2 tileCoord = pixelCoord / tileSize;
     uint tileIndex = tileCoord.y * ((imageSize.x + tileSize.x - 1) / tileSize.x) + tileCoord.x;
-    uint tileCount = min(tileCounts[tileIndex], 16384u);
+    uint tileCount = min(tileCounts[tileIndex], maxGaussiansPerTile);
     
     float3 accumulatedColor = float3(0.0f);
     float accumulatedAlpha = 0.0f;
     float T = 1.0f;
     
     for (uint i = 0; i < tileCount && T > 0.001f; i++) {
-        uint gaussianIndex = tileAssignments[tileIndex * 16384 + i];
+        uint gaussianIndex = tileAssignments[tileIndex * maxGaussiansPerTile + i];
         ProjectedGaussian gaussian = sortedGaussians[gaussianIndex];
         if (gaussian.alpha <= 0.0f) continue;
         

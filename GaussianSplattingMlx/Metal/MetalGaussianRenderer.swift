@@ -82,12 +82,13 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     // Configuration
     private let maxGaussians: Int
     private var tileSize: SIMD2<UInt32>
+    private let maxGaussiansPerTile: UInt32
     private var loadedGaussianCount: Int = 0
     private var preparedSortCount: Int = 0
     
     var metalDevice: MTLDevice { device }
     
-    init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64)) {
+    init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64), maxGaussiansPerTile: UInt32 = 16384) {
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("Metal not supported")
             return nil
@@ -96,6 +97,7 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.maxGaussians = maxGaussians
         self.tileSize = tileSize
+        self.maxGaussiansPerTile = maxGaussiansPerTile
         
         guard let commandQueue = device.makeCommandQueue() else {
             print("Failed to create command queue")
@@ -193,8 +195,7 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         
         // Tile buffers (assuming max 4K resolution with 64x64 tiles = ~4096 tiles)
         let maxTiles = 4096
-        let maxGaussiansPerTile = 16384
-        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * maxGaussiansPerTile, options: .storageModeShared)
+        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * Int(maxGaussiansPerTile), options: .storageModeShared)
         tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles, options: .storageModeShared)
     }
     
@@ -616,6 +617,9 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         var numGaussiansVar = UInt32(numGaussians)
         computeEncoder.setBytes(&numGaussiansVar, length: MemoryLayout<UInt32>.stride, index: 6)
         
+        var maxGaussiansPerTileVar = self.maxGaussiansPerTile
+        computeEncoder.setBytes(&maxGaussiansPerTileVar, length: MemoryLayout<UInt32>.stride, index: 7)
+        
         let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
         let threadgroupsPerGrid = MTLSize(
             width: (numGaussians + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
@@ -643,6 +647,9 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         var imageSize = SIMD2<UInt32>(UInt32(width), UInt32(height))
         computeEncoder.setBytes(&imageSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 3)
         computeEncoder.setBytes(&tileSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 4)
+        
+        var maxGaussiansPerTileVar = self.maxGaussiansPerTile
+        computeEncoder.setBytes(&maxGaussiansPerTileVar, length: MemoryLayout<UInt32>.stride, index: 5)
         
         // Use a safe 2D threadgroup size for all Apple GPUs (<= 1024 threads total).
         let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)

@@ -140,6 +140,7 @@ kernel void assignGaussiansToTiles(
     constant uint2& imageSize [[buffer(4)]],
     constant uint2& tileSize [[buffer(5)]],
     constant uint& numGaussians [[buffer(6)]],
+    constant uint& maxGaussiansPerTile [[buffer(7)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= numGaussians) return;
@@ -171,9 +172,9 @@ kernel void assignGaussiansToTiles(
             uint tileIndex = ty * tilesPerAxis.x + tx;
             uint assignmentIndex = atomic_fetch_add_explicit(&tileCounts[tileIndex], 1, memory_order_relaxed);
             
-            // Store assignment (would need proper indexing in practice)
-            uint globalAssignmentIndex = tileIndex * 16384 + assignmentIndex; // Assuming max 16384 gaussians per tile
-            if (assignmentIndex < 16384) {
+            // Store assignment
+            uint globalAssignmentIndex = tileIndex * maxGaussiansPerTile + assignmentIndex;
+            if (assignmentIndex < maxGaussiansPerTile) {
                 tileAssignments[globalAssignmentIndex] = id;
             }
         }
