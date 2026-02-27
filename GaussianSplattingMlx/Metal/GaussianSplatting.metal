@@ -151,7 +151,8 @@ kernel void projectGaussians(
     J[2][2] = 1.0f;
     
     float3x3 W = transpose(float3x3(camera.viewMatrix[0].xyz, camera.viewMatrix[1].xyz, camera.viewMatrix[2].xyz));
-    float3x3 cov2d_full = J * W * cov3d * transpose(W) * transpose(J);
+    float3x3 T = W * J;
+    float3x3 cov2d_full = transpose(T) * cov3d * T;
     
     // Extract 2D part and add filtering
     float3 cov2d;
@@ -176,8 +177,9 @@ kernel void projectGaussians(
         
         visibilityMask[id] = 1;
         
-        // Compute color (simplified for now)
-        float3 color = gaussian.sh_dc + 0.5f;
+        // Compute color (SH DC band)
+        const float SH_C0 = 0.28209479177387814f;
+        float3 color = clamp(SH_C0 * gaussian.sh_dc + 0.5f, 0.0f, 1.0f);
         
         // Store projected data
         projectedGaussians[id].mean2d = screenPos;
@@ -210,20 +212,21 @@ kernel void renderTiles(
     texture2d<float, access::write> outputImage [[texture(0)]],
     constant uint2& imageSize [[buffer(3)]],
     constant uint2& tileSize [[buffer(4)]],
+    constant uint& maxGaussiansPerTile [[buffer(5)]],
     uint2 pixelCoord [[thread_position_in_grid]]
 ) {
     if (pixelCoord.x >= imageSize.x || pixelCoord.y >= imageSize.y) return;
     
     uint2 tileCoord = pixelCoord / tileSize;
     uint tileIndex = tileCoord.y * ((imageSize.x + tileSize.x - 1) / tileSize.x) + tileCoord.x;
-    uint tileCount = min(tileCounts[tileIndex], 1024u);
+    uint tileCount = min(tileCounts[tileIndex], maxGaussiansPerTile);
     
     float3 accumulatedColor = float3(0.0f);
     float accumulatedAlpha = 0.0f;
     float T = 1.0f;
     
     for (uint i = 0; i < tileCount && T > 0.001f; i++) {
-        uint gaussianIndex = tileAssignments[tileIndex * 1024 + i];
+        uint gaussianIndex = tileAssignments[tileIndex * maxGaussiansPerTile + i];
         ProjectedGaussian gaussian = sortedGaussians[gaussianIndex];
         if (gaussian.alpha <= 0.0f) continue;
         

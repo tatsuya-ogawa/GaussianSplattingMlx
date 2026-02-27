@@ -52,13 +52,22 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     private let assignTilesPipeline: MTLComputePipelineState
     private let clearBuffersPipeline: MTLComputePipelineState
     
+    // Radix sort pipelines
+    private let prepareRadixKeysPipeline: MTLComputePipelineState
+    private let radixCountPipeline: MTLComputePipelineState
+    private let radixPrefixSumPipeline: MTLComputePipelineState
+    private let radixScatterPipeline: MTLComputePipelineState
+    
     // Buffers
     private var gaussianBuffer: MTLBuffer?
     private var projectedGaussianBuffer: MTLBuffer?
     private var sortedGaussianBuffer: MTLBuffer?
     private var visibilityMaskBuffer: MTLBuffer?
-    private var depthKeysBuffer: MTLBuffer?
-    private var sortIndicesBuffer: MTLBuffer?
+    private var depthKeysBuffer: MTLBuffer?      // radix keys A (ping)
+    private var sortIndicesBuffer: MTLBuffer?     // radix values A (ping)
+    private var radixKeysTempBuffer: MTLBuffer?   // radix keys B (pong)
+    private var radixValuesTempBuffer: MTLBuffer?  // radix values B (pong)
+    private var radixHistogramBuffer: MTLBuffer?   // 256 uints
     private var tileAssignmentsBuffer: MTLBuffer?
     private var tileCountsBuffer: MTLBuffer?
     
@@ -73,12 +82,13 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     // Configuration
     private let maxGaussians: Int
     private var tileSize: SIMD2<UInt32>
+    private let maxGaussiansPerTile: UInt32
     private var loadedGaussianCount: Int = 0
     private var preparedSortCount: Int = 0
     
     var metalDevice: MTLDevice { device }
     
-    init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64)) {
+    init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64), maxGaussiansPerTile: UInt32 = 16384) {
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("Metal not supported")
             return nil
@@ -87,6 +97,7 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.maxGaussians = maxGaussians
         self.tileSize = tileSize
+        self.maxGaussiansPerTile = maxGaussiansPerTile
         
         guard let commandQueue = device.makeCommandQueue() else {
             print("Failed to create command queue")
@@ -112,7 +123,11 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
               let sortFunction = library.makeFunction(name: "sortGaussiansByDepth"),
               let renderFunction = library.makeFunction(name: "renderTiles"),
               let assignFunction = library.makeFunction(name: "assignGaussiansToTiles"),
-              let clearFunction = library.makeFunction(name: "clearBuffers") else {
+              let clearFunction = library.makeFunction(name: "clearBuffers"),
+              let prepareRadixKeysFunction = library.makeFunction(name: "prepareRadixSortKeys"),
+              let radixCountFunction = library.makeFunction(name: "radixSortCount"),
+              let radixPrefixSumFunction = library.makeFunction(name: "radixSortPrefixSum"),
+              let radixScatterFunction = library.makeFunction(name: "radixSortScatter") else {
             print("Failed to create Metal functions")
             return nil
         }
@@ -123,6 +138,10 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
             self.renderTilesPipeline = try device.makeComputePipelineState(function: renderFunction)
             self.assignTilesPipeline = try device.makeComputePipelineState(function: assignFunction)
             self.clearBuffersPipeline = try device.makeComputePipelineState(function: clearFunction)
+            self.prepareRadixKeysPipeline = try device.makeComputePipelineState(function: prepareRadixKeysFunction)
+            self.radixCountPipeline = try device.makeComputePipelineState(function: radixCountFunction)
+            self.radixPrefixSumPipeline = try device.makeComputePipelineState(function: radixPrefixSumFunction)
+            self.radixScatterPipeline = try device.makeComputePipelineState(function: radixScatterFunction)
             
             let vertexDescriptor = MTLVertexDescriptor()
             vertexDescriptor.attributes[0].format = .float2
@@ -168,12 +187,15 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         projectedGaussianBuffer = device.makeBuffer(length: projectedSize * maxGaussians, options: .storageModeShared)
         sortedGaussianBuffer = device.makeBuffer(length: projectedSize * maxGaussians, options: .storageModeShared)
         visibilityMaskBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxGaussians, options: .storageModeShared)
-        depthKeysBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride * maxGaussians, options: .storageModeShared)
+        depthKeysBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxGaussians, options: .storageModeShared)
         sortIndicesBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxGaussians, options: .storageModeShared)
+        radixKeysTempBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxGaussians, options: .storageModeShared)
+        radixValuesTempBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxGaussians, options: .storageModeShared)
+        radixHistogramBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * 256, options: .storageModeShared)
         
         // Tile buffers (assuming max 4K resolution with 64x64 tiles = ~4096 tiles)
         let maxTiles = 4096
-        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * 1024, options: .storageModeShared)
+        tileAssignmentsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles * Int(maxGaussiansPerTile), options: .storageModeShared)
         tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * maxTiles, options: .storageModeShared)
     }
     
@@ -256,13 +278,16 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         // 1. Project Gaussians to 2D
         projectGaussians(commandBuffer: commandBuffer, cameraParams: cameraParams, numGaussians: numGaussians)
         
-        // 2. Sort by depth
+        // 2. GPU Radix Sort by depth (front-to-back)
+        gpuRadixSort(commandBuffer: commandBuffer, numGaussians: numGaussians)
+        
+        // 3. Reorder projected gaussians using sorted indices
         sortGaussiansByDepth(commandBuffer: commandBuffer, numGaussians: numGaussians)
         
-        // 3. Assign to tiles
+        // 4. Assign to tiles
         assignGaussiansToTiles(commandBuffer: commandBuffer, width: width, height: height, numGaussians: numGaussians)
         
-        // 4. Render tiles
+        // 5. Render tiles
         renderTiles(commandBuffer: commandBuffer, width: width, height: height)
         
         commandBuffer.addCompletedHandler { [weak self] _ in
@@ -282,6 +307,90 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
             indices[i] = UInt32(i)
         }
         preparedSortCount = numGaussians
+    }
+    
+    /// GPU 8-bit radix sort on projected depth (4 passes, front-to-back).
+    /// After completion, `sortIndicesBuffer` contains indices sorted by ascending depth.
+    private func gpuRadixSort(commandBuffer: MTLCommandBuffer, numGaussians: Int) {
+        guard let projectedGaussianBuffer = projectedGaussianBuffer,
+              let depthKeysBuffer = depthKeysBuffer,
+              let sortIndicesBuffer = sortIndicesBuffer,
+              let radixKeysTempBuffer = radixKeysTempBuffer,
+              let radixValuesTempBuffer = radixValuesTempBuffer,
+              let radixHistogramBuffer = radixHistogramBuffer else { return }
+        
+        let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (numGaussians + 255) / 256, height: 1, depth: 1
+        )
+        var numElementsVar = UInt32(numGaussians)
+        let histogramSize = MemoryLayout<UInt32>.stride * 256
+        
+        // Step 1: Prepare sortable keys and initial indices from projected depth
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(prepareRadixKeysPipeline)
+            encoder.setBuffer(projectedGaussianBuffer, offset: 0, index: 0)
+            encoder.setBuffer(depthKeysBuffer, offset: 0, index: 1)
+            encoder.setBuffer(sortIndicesBuffer, offset: 0, index: 2)
+            encoder.setBytes(&numElementsVar, length: MemoryLayout<UInt32>.stride, index: 3)
+            encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.endEncoding()
+        }
+        
+        // Ping-pong buffers: pass 0 reads A writes B, pass 1 reads B writes A, ...
+        let keysBuffers = [depthKeysBuffer, radixKeysTempBuffer]
+        let valuesBuffers = [sortIndicesBuffer, radixValuesTempBuffer]
+        
+        // Step 2: Four 8-bit radix sort passes
+        for pass in 0..<4 {
+            let bitOffset = UInt32(pass * 8)
+            let srcIdx = pass % 2
+            let dstIdx = 1 - srcIdx
+            
+            // 2a. Clear histogram
+            if let blitEncoder = commandBuffer.makeBlitCommandEncoder() {
+                blitEncoder.fill(buffer: radixHistogramBuffer, range: 0..<histogramSize, value: 0)
+                blitEncoder.endEncoding()
+            }
+            
+            // 2b. Count digit occurrences
+            if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                var bitOffsetVar = bitOffset
+                encoder.setComputePipelineState(radixCountPipeline)
+                encoder.setBuffer(keysBuffers[srcIdx], offset: 0, index: 0)
+                encoder.setBuffer(radixHistogramBuffer, offset: 0, index: 1)
+                encoder.setBytes(&bitOffsetVar, length: MemoryLayout<UInt32>.stride, index: 2)
+                encoder.setBytes(&numElementsVar, length: MemoryLayout<UInt32>.stride, index: 3)
+                encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                encoder.endEncoding()
+            }
+            
+            // 2c. Exclusive prefix sum
+            if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                encoder.setComputePipelineState(radixPrefixSumPipeline)
+                encoder.setBuffer(radixHistogramBuffer, offset: 0, index: 0)
+                encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                             threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+                encoder.endEncoding()
+            }
+            
+            // 2d. Scatter to sorted positions
+            if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                var bitOffsetVar = bitOffset
+                encoder.setComputePipelineState(radixScatterPipeline)
+                encoder.setBuffer(keysBuffers[srcIdx], offset: 0, index: 0)
+                encoder.setBuffer(valuesBuffers[srcIdx], offset: 0, index: 1)
+                encoder.setBuffer(keysBuffers[dstIdx], offset: 0, index: 2)
+                encoder.setBuffer(valuesBuffers[dstIdx], offset: 0, index: 3)
+                encoder.setBuffer(radixHistogramBuffer, offset: 0, index: 4)
+                encoder.setBytes(&bitOffsetVar, length: MemoryLayout<UInt32>.stride, index: 5)
+                encoder.setBytes(&numElementsVar, length: MemoryLayout<UInt32>.stride, index: 6)
+                encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                encoder.endEncoding()
+            }
+        }
+        // After 4 passes (even count), results are back in keysBuffers[0]/valuesBuffers[0]
+        // = depthKeysBuffer / sortIndicesBuffer. Ready for sortGaussiansByDepth.
     }
     
     private func logFrameStats(numGaussians: Int, width: Int, height: Int) {
@@ -508,6 +617,9 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         var numGaussiansVar = UInt32(numGaussians)
         computeEncoder.setBytes(&numGaussiansVar, length: MemoryLayout<UInt32>.stride, index: 6)
         
+        var maxGaussiansPerTileVar = self.maxGaussiansPerTile
+        computeEncoder.setBytes(&maxGaussiansPerTileVar, length: MemoryLayout<UInt32>.stride, index: 7)
+        
         let threadsPerThreadgroup = MTLSize(width: 256, height: 1, depth: 1)
         let threadgroupsPerGrid = MTLSize(
             width: (numGaussians + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
@@ -535,6 +647,9 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         var imageSize = SIMD2<UInt32>(UInt32(width), UInt32(height))
         computeEncoder.setBytes(&imageSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 3)
         computeEncoder.setBytes(&tileSize, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 4)
+        
+        var maxGaussiansPerTileVar = self.maxGaussiansPerTile
+        computeEncoder.setBytes(&maxGaussiansPerTileVar, length: MemoryLayout<UInt32>.stride, index: 5)
         
         // Use a safe 2D threadgroup size for all Apple GPUs (<= 1024 threads total).
         let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
