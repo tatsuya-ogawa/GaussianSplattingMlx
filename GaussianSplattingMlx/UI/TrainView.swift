@@ -80,6 +80,9 @@ struct TrainView: View {
     @State private var latestCaptureURL: URL?
     @State private var showShareSheet: Bool = false
     @State var captureEnabled: Bool = false
+    @State var intervalProfilingEnabled: Bool = false
+    @State var profilingLogInterval: Int = 20
+    @State var profilingTopKSections: Int = 12
 
     func getDataLoader() throws -> DataLoaderProtocol {
         switch selected.format {
@@ -163,8 +166,8 @@ struct TrainView: View {
         let cacheLimit = GaussianTrainer.defaultCacheLimit()
         let manualClearCache = GaussianTrainer.needEagerClearCache()
         let memoryLimit = Int(min(UInt64(cacheLimit) * 2, UInt64(Int.max)))
-        MLX.GPU.set(cacheLimit: cacheLimit)
-        MLX.GPU.set(memoryLimit: memoryLimit)
+        MLX.Memory.cacheLimit = cacheLimit
+        MLX.Memory.memoryLimit = memoryLimit
         let sh_degree = 4
         let safeSampleCount = max(1, sampleCount)
         let safeIterationCount = max(1, iterationCount)
@@ -188,11 +191,14 @@ struct TrainView: View {
             iterationCount: safeIterationCount,
             cacheLimit: cacheLimit,
             manualClearCache: manualClearCache,
+            enableIntervalProfiling: intervalProfilingEnabled,
+            profilingLogInterval: max(1, profilingLogInterval),
+            profilingTopKSections: max(1, profilingTopKSections),
             outputDirectoryURL: TrainOutputAsset.shared.getOutputDirectory()
         )
         viewModel.trainer?.delegate = viewModel
         viewModel.trainer?.startTrain()
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
         DispatchQueue.main.async {
             self.isTraining = false
         }
@@ -236,7 +242,7 @@ struct TrainView: View {
                 }.buttonStyle(.borderedProminent)
             } else {
                 SelectDataSetView(selected: $selected)
-                    .onChange(of: selected) { _ in
+                    .onChange(of: selected) { oldValue, newValue in
                         loadOriginalResolution()
                     }
                 
@@ -293,6 +299,36 @@ struct TrainView: View {
                     
                     Toggle("Capture GPU trace", isOn: $captureEnabled)
                         .toggleStyle(.switch).frame(width: 240)
+
+                    Toggle("Interval profiling", isOn: $intervalProfilingEnabled)
+                        .toggleStyle(.switch)
+                        .frame(width: 240)
+
+                    if intervalProfilingEnabled {
+                        HStack {
+                            Text("Profile Log Interval")
+                            TextField(
+                                "20",
+                                value: $profilingLogInterval,
+                                format: .number
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.numberPad)
+                            .frame(width: 140)
+                        }
+
+                        HStack {
+                            Text("Profile Top Sections")
+                            TextField(
+                                "12",
+                                value: $profilingTopKSections,
+                                format: .number
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.numberPad)
+                            .frame(width: 140)
+                        }
+                    }
                     
                     HStack {
                         Text("Sample Count")
@@ -345,3 +381,4 @@ extension SelectedDataSet {
         }
     }
 }
+

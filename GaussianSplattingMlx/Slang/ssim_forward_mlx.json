@@ -1,0 +1,89 @@
+{
+  "metal": "build/slang_ssim/ssim_forward.metal",
+  "entry": "ssim_forward",
+  "kernel_name": "ssim_forward_slang_v1",
+  "kernel_var": "ssim_forwardKernel",
+  "input_names": [
+    "ssf_img1_1",
+    "ssf_img2_1",
+    "ssf_window_1",
+    "ssf_params_1"
+  ],
+  "output_names": [
+    "ssf_outSsim_1",
+    "ssf_outMu1_1",
+    "ssf_outMu2_1",
+    "ssf_outSigma1_1",
+    "ssf_outSigma2_1",
+    "ssf_outSigma12_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint H_0 = ssf_params_1[int(0)];\nuint W_0 = ssf_params_1[int(1)];\nuint C_0 = ssf_params_1[int(2)];\nuint K_0 = ssf_params_1[int(3)];\nuint _S1 = K_0 / 2U;\n\nuint idx_0 = tid_0.x;\nif(idx_0 >= (H_0 * W_0 * C_0))\n{\n    return;\n}\nuint _S2 = idx_0 % C_0;\nuint tmp_0 = idx_0 / C_0;\nuint _S3 = tmp_0 % W_0;\nuint _S4 = tmp_0 / W_0;\nuint ki_0 = 0U;\nfloat sum_w1_0 = 0.0;\nfloat sum_w2_0 = 0.0;\nfloat sum_w1sq_0 = 0.0;\nfloat sum_w2sq_0 = 0.0;\nfloat sum_w12_0 = 0.0;\nfor(;;)\n{\n    if(ki_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    int _S5 = int(_S1);\n    int src_h_0 = int(_S4) + int(ki_0) - _S5;\n    bool _S6;\n    if(src_h_0 < int(0))\n    {\n        _S6 = true;\n    }\n    else\n    {\n        _S6 = src_h_0 >= int(H_0);\n    }\n    float sum_w1_1;\n    float sum_w2_1;\n    float sum_w1sq_1;\n    float sum_w2sq_1;\n    float sum_w12_1;\n    if(_S6)\n    {\n        sum_w1_1 = sum_w1_0;\n        sum_w2_1 = sum_w2_0;\n        sum_w1sq_1 = sum_w1sq_0;\n        sum_w2sq_1 = sum_w2sq_0;\n        sum_w12_1 = sum_w12_0;\n        ki_0 = ki_0 + 1U;\n        sum_w1_0 = sum_w1_1;\n        sum_w2_0 = sum_w2_1;\n        sum_w1sq_0 = sum_w1sq_1;\n        sum_w2sq_0 = sum_w2sq_1;\n        sum_w12_0 = sum_w12_1;\n        continue;\n    }\n    uint kj_0 = 0U;\n    sum_w1_1 = sum_w1_0;\n    sum_w2_1 = sum_w2_0;\n    sum_w1sq_1 = sum_w1sq_0;\n    sum_w2sq_1 = sum_w2sq_0;\n    sum_w12_1 = sum_w12_0;\n\n    for(;;)\n    {\n        if(kj_0 < K_0)\n        {\n        }\n        else\n        {\n            break;\n        }\n        int src_w_0 = int(_S3) + int(kj_0) - _S5;\n        bool _S7;\n        if(src_w_0 < int(0))\n        {\n            _S7 = true;\n        }\n        else\n        {\n            _S7 = src_w_0 >= int(W_0);\n        }\n        if(_S7)\n        {\n            kj_0 = kj_0 + 1U;\n            continue;\n        }\n\n        float wt_0 = ssf_window_1[ki_0 * K_0 + kj_0];\n        uint srcIdx_0 = uint(src_h_0) * W_0 * C_0 + uint(src_w_0) * C_0 + _S2;\n        float v1_0 = ssf_img1_1[srcIdx_0];\n        float v2_0 = ssf_img2_1[srcIdx_0];\n\n        float _S8 = wt_0 * v1_0;\n        float _S9 = wt_0 * v2_0;\n        float sum_w2_2 = sum_w2_1 + _S9;\n        float sum_w1sq_2 = sum_w1sq_1 + _S8 * v1_0;\n        float sum_w2sq_2 = sum_w2sq_1 + _S9 * v2_0;\n        float sum_w12_2 = sum_w12_1 + _S8 * v2_0;\n        sum_w1_1 = sum_w1_1 + _S8;\n        sum_w2_1 = sum_w2_2;\n        sum_w1sq_1 = sum_w1sq_2;\n        sum_w2sq_1 = sum_w2sq_2;\n        sum_w12_1 = sum_w12_2;\n        kj_0 = kj_0 + 1U;\n    }\n    ki_0 = ki_0 + 1U;\n    sum_w1_0 = sum_w1_1;\n    sum_w2_0 = sum_w2_1;\n    sum_w1sq_0 = sum_w1sq_1;\n    sum_w2sq_0 = sum_w2sq_1;\n    sum_w12_0 = sum_w12_1;\n}\nfloat _S10 = sum_w1_0 * sum_w1_0;\nfloat sigma1_sq_0 = sum_w1sq_0 - _S10;\nfloat _S11 = sum_w2_0 * sum_w2_0;\nfloat sigma2_sq_0 = sum_w2sq_0 - _S11;\nfloat sigma12_0 = sum_w12_0 - sum_w1_0 * sum_w2_0;\n*(ssf_outSsim_1+idx_0) = (2.0 * sum_w1_0 * sum_w2_0 + 0.00009999999747379) * (2.0 * sigma12_0 + 0.00089999998454005) / ((_S10 + _S11 + 0.00009999999747379) * (sigma1_sq_0 + sigma2_sq_0 + 0.00089999998454005));\n*(ssf_outMu1_1+idx_0) = sum_w1_0;\n*(ssf_outMu2_1+idx_0) = sum_w2_0;\n*(ssf_outSigma1_1+idx_0) = sigma1_sq_0;\n*(ssf_outSigma2_1+idx_0) = sigma2_sq_0;\n*(ssf_outSigma12_1+idx_0) = sigma12_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "ssf_img1_1",
+      "buffer_index": 0,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_img2_1",
+      "buffer_index": 1,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_window_1",
+      "buffer_index": 2,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_params_1",
+      "buffer_index": 3,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "ssf_outSsim_1",
+      "buffer_index": 4,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_outMu1_1",
+      "buffer_index": 5,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_outMu2_1",
+      "buffer_index": 6,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_outSigma1_1",
+      "buffer_index": 7,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_outSigma2_1",
+      "buffer_index": 8,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssf_outSigma12_1",
+      "buffer_index": 9,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_ssim/ssim_forward_mlx.swift"
+}

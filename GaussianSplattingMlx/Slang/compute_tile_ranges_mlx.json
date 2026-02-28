@@ -10,7 +10,7 @@
   "output_names": [
     "tr_tileRanges_1"
   ],
-  "source": "uint3 tid_0 = thread_position_in_grid;\nuint idx_0 = tid_0.x;\nuint M_0 = tr_counts_1[int(0)];\n\nif(idx_0 >= M_0)\n{\n    return;\n}\n\nuint curTile_0 = tr_sortedKeysHigh_1[idx_0];\n\nif(idx_0 == 0U)\n{\n    *(tr_tileRanges_1+curTile_0 * 2U) = 0U;\n}\nelse\n{\n\n    uint prevTile_0 = tr_sortedKeysHigh_1[idx_0 - 1U];\n    if(curTile_0 != prevTile_0)\n    {\n        *(tr_tileRanges_1+(prevTile_0 * 2U + 1U)) = idx_0;\n        *(tr_tileRanges_1+curTile_0 * 2U) = idx_0;\n    }\n}\nif(idx_0 == (M_0 - 1U))\n{\n    *(tr_tileRanges_1+(curTile_0 * 2U + 1U)) = M_0;\n}\n\nreturn;",
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint idx_0 = tid_0.x;\nuint M_0 = tr_counts_1[int(0)];\nif(idx_0 >= M_0)\n{\n    return;\n}\n\nuint curTile_0 = tr_sortedKeysHigh_1[idx_0];\nif(idx_0 == 0U)\n{\n    *(tr_tileRanges_1+curTile_0 * 2U) = 0U;\n}\nelse\n{\n\n    uint prevTile_0 = tr_sortedKeysHigh_1[idx_0 - 1U];\n    if(curTile_0 != prevTile_0)\n    {\n        *(tr_tileRanges_1+(prevTile_0 * 2U + 1U)) = idx_0;\n        *(tr_tileRanges_1+curTile_0 * 2U) = idx_0;\n    }\n}\nif(idx_0 == (M_0 - 1U))\n{\n    *(tr_tileRanges_1+(curTile_0 * 2U + 1U)) = M_0;\n}\n\nreturn;",
   "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
   "buffer_parameters": [
     {

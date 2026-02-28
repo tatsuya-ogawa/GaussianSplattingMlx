@@ -49,6 +49,7 @@ entries=(
   gaussian_screen_cov3d_backward
   gaussian_screen_inverse2d_forward
   gaussian_screen_inverse2d_backward
+  gaussian_screen_fused_forward
 )
 
 for entry in "${entries[@]}"; do
@@ -90,6 +91,10 @@ for entry in "${entries[@]}"; do
     gaussian_screen_inverse2d_backward)
       input_names="inverse_cov2d_1,inverse_cotConic_1,inverse_counts_1"
       output_names="inverse_gradCov2d_1"
+      ;;
+    gaussian_screen_fused_forward)
+      input_names="fused_scales_1,fused_rotations_1,fused_means3d_1,fused_shs_1,fused_cameraCenter_1,fused_viewMatrix_1,fused_fovX_1,fused_fovY_1,fused_focalX_1,fused_focalY_1,fused_counts_1"
+      output_names="fused_outColor_1,fused_outCov2d_1,fused_outConic_1"
       ;;
     *)
       echo "Unknown entry: $entry" >&2

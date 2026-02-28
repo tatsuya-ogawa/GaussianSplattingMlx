@@ -1,5 +1,5 @@
 import Foundation
-import MLXFast
+import MLX
 
 struct SlangKernelSpec: Decodable {
     let kernelName: String
