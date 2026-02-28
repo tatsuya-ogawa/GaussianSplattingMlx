@@ -71,24 +71,24 @@ struct TinyTests {
         let N = 10_000
         let D = 3
 
-        // 1. ランダムデータ作成
+        // 1. Create random data
         let dataArray: [Float] = (0..<(N * D)).map { _ in
             Float.random(in: 0..<1)
         }
         let data = MLXArray(dataArray, [N, D])
 
-        // 2. 条件mask作成: 0番目成分が0.1以下
+        // 2. Create condition mask: 0th component <= 0.1
         let mask = data[.ellipsis, 0] .<= 0.1  // shape: [N]
         let indices: [Int] = mask.enumerated().filter { (i, d) in
             return d.item(Bool.self)
         }.map { (i, d) in
             return i
         }
-        // 3. 条件抽出: [M, 3]（Mは該当数）
+        // 3. Extract conditions: [M, 3] (M is the number of matches)
         //        let selected = data[mask]
         let selected = data[MLXArray(indices)]
 
-        // 4. 検証: プリミティブでground truth
+        // 4. Verification: ground truth with primitives
         var expected: [[Float]] = []
         for i in 0..<N {
             let x = dataArray[i * D]
@@ -151,8 +151,8 @@ struct TinyTests {
         }
         let v = simd_float4(1, 2, 3, 4)  // [1,2,3,4]（行ベクトル）
 
-        // 2. simdでの演算（行ベクトル × 行列）
-        let out_simd = v * mat  // simdは行ベクトル×行列
+        // 2. Operation with simd (row vector x matrix)
+        let out_simd = v * mat  // simd is row vector x matrix
         #expect(out_simd == simd_float4(20.0, 120.0, 220.0, 320.0))
 
         let mlxMat = mat.toMLXArray()
@@ -161,7 +161,7 @@ struct TinyTests {
         #expect(out_mlx.allClose(MLXArray([20.0, 120.0, 220.0, 320.0] as [Float])).item())
     }
     @Test func test_simd_matmul() {
-        // 1. 2つの simd_float4x4 を作る
+        // 1. Create two simd_float4x4 matrices
         var matA = simd_float4x4()
         var matB = simd_float4x4()
         for i in 0..<4 {
@@ -170,15 +170,15 @@ struct TinyTests {
                 matB[i, j] = Float(100 + i * 10 + j)  // 100,101,102... 110,111...
             }
         }
-        // 2. simdでの行列積
-        let out_simd = matA * matB  // simdは「右から左」：matA×matB
+        // 2. Matrix multiplication with simd
+        let out_simd = matA * matB  // simd is "right to left": matA x matB
 
-        // 3. MLXArrayに変換（row-majorでOK）
+        // 3. Convert to MLXArray (row-major is OK)
         let mlxA = matA.toMLXArray()
         let mlxB = matB.toMLXArray()
         let out_mlx = mlxA.matmul(mlxB)
 
-        // 4. 結果比較（要素全一致チェック）
+        // 4. Compare results (check all elements match)
         for i in 0..<4 {
             for j in 0..<4 {
                 #expect(out_simd[j, i] == out_mlx[i, j].item())
@@ -198,7 +198,7 @@ struct TinyTests {
         }
     }
 
-    // 2. 画像を一時ファイルに保存
+    // 2. Save image to temporary file
     func saveImageToTmp(_ image: UIImage, filename: String = "testimg.png") -> URL {
         print(image.size)
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(filename)
@@ -206,13 +206,13 @@ struct TinyTests {
         return url
     }
 
-    // 3. 画像をMLXArrayに変換
+    // 3. Convert image to MLXArray
     func loadRGB(path: URL, scale: Double = 1.0) -> MLXArray {
         guard let image = UIImage(contentsOfFile: path.path) else {
-            fatalError("画像が読み込めません: \(path)")
+            fatalError("Cannot load image: \(path)")
         }
-        let img = image  // scaleは省略
-        guard let cgImage = img.cgImage else { fatalError("CGImage変換失敗") }
+        let img = image  // scale is omitted
+        guard let cgImage = img.cgImage else { fatalError("CGImage conversion failed") }
         let width = cgImage.width
         let height = cgImage.height
         let bytesPerPixel = 4

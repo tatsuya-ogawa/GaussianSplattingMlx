@@ -25,7 +25,7 @@ func distTopK(_ X: MLXArray, k: Int, manualClearCache: Bool = GaussianTrainer.ne
         mean = MLX.stopGradient(mean)
         eval(mean)
         averageDist2[i..<i + chunkSize] = mean
-        if manualClearCache { MLX.GPU.clearCache() }
+        if manualClearCache { MLX.Memory.clearCache() }
     }
     return averageDist2
 }

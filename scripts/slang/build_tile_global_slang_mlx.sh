@@ -80,10 +80,10 @@ for entry in "${entries[@]}"; do
       ;;
     gaussian_tile_global_forward)
       input_names="gtf_packedGaussians_1,gtf_packedTileIndices_1,gtf_tileCounts_1,gtf_renderCounts_1"
-      output_names="gtf_outColor_1,gtf_outDepth_1,gtf_outAlpha_1"
+      output_names="gtf_outColor_1,gtf_outDepth_1,gtf_outAlpha_1,gtf_outLastContrib_1"
       ;;
     gaussian_tile_global_backward)
-      input_names="gtb_packedGaussians_1,gtb_packedTileIndices_1,gtb_tileCounts_1,gtb_cotColor_1,gtb_cotDepth_1,gtb_cotAlpha_1,gtb_renderCounts_1"
+      input_names="gtb_packedGaussians_1,gtb_packedTileIndices_1,gtb_tileCounts_1,gtb_cotColor_1,gtb_cotDepth_1,gtb_cotAlpha_1,gtb_renderCounts_1,gtb_outAlpha_1,gtb_lastContrib_1"
       output_names="gtb_gradPackedGaussians_1"
       ;;
     *)

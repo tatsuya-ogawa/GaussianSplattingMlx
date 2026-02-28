@@ -169,7 +169,7 @@ class PointCloud {
         return PointCloud(coords: newCoords, channels: newChannels)
     }
     func centering(data: TrainData,outlierSigma:Float=3.0) {
-        var c2wArray = data.c2wArray
+        let c2wArray = data.c2wArray
         let centerOfCoords = coords.mean(axis: 0)
         c2wArray[0..., 0..<3, 3] -= centerOfCoords
         data.c2wArray = c2wArray

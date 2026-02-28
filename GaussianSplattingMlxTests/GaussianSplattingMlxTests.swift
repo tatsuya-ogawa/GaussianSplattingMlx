@@ -374,8 +374,8 @@ struct GaussianSplattingMlxTests {
             camera: camera,
             activeShDegree: 0
         )
-        // means3D - camera_center はmeans3Dそのまま
-        // evalSh(deg=0)はshs[...,0]にC0掛け
+        // means3D - camera_center is means3D itself
+        // evalSh(deg=0) multiplies shs[...,0] by C0
         var expectedData0 = [Float]()
         for v in shsData {
             let c = max(Float(C0) * v + 0.5, 0.0)
@@ -397,11 +397,11 @@ struct GaussianSplattingMlxTests {
             0.5, -0.5, 0.5, 0.5,  // B2
         ]
         let shs1 = MLXArray(shs1Data, [2, 3, 4])
-        // means3D同じ
+        // means3D is the same
         // rays_d = means3D - camera_center = means3D
-        // 1点目(1.0,2.0,3.0), 2点目(-2.0,1.0,0.0)
+        // 1st point (1.0, 2.0, 3.0), 2nd point (-2.0, 1.0, 0.0)
         let rays_d = means3D
-        // MLX: evalShはshsのチャンネルごとに適用なので、テストも各chで計算
+        // MLX: evalSh is applied per channel of shs, so tests calculate per channel too
         func evalSHdeg1(_ sh: [Float], _ x: Float, _ y: Float, _ z: Float)
             -> [Float]
         {
@@ -449,25 +449,25 @@ struct GaussianSplattingMlxTests {
         #expect(MLX.allClose(mesh, expected, atol: 1e-5).item())
     }
     @Test func test_computeTileMask() throws {
-        // ガウシアン中心点と半径
+        // Gaussian center points and radii
         let rect_minData: [Float] = [
-            90.0, 90.0,  // 1つ目のガウシアン
-            180.0, 130.0,  // 2つ目のガウシアン
+            90.0, 90.0,  // 1st Gaussian
+            180.0, 130.0,  // 2nd Gaussian
         ]
         let rect_min = MLXArray(rect_minData, [2, 2])
 
         let rect_maxData: [Float] = [
-            110.0, 110.0,  // 1つ目のガウシアン
-            220.0, 170.0,  // 2つ目のガウシアン
+            110.0, 110.0,  // 1st Gaussian
+            220.0, 170.0,  // 2nd Gaussian
         ]
         let rect_max = MLXArray(rect_maxData, [2, 2])
 
-        // タイル座標（左上から64x64ピクセルのタイル）
+        // Tile coordinates (64x64 pixel tile from top-left)
         let h = 64
         let w = 64
         let tileSize = TILE_SIZE_H_W(w: w, h: h)
 
-        // タイル内に入るガウシアンの判定
+        // Determine Gaussians overlapping the tile
         let inMask = computeTileMask(
             h: h,
             w: w,
@@ -475,21 +475,21 @@ struct GaussianSplattingMlxTests {
             rect: (rect_min, rect_max)
         )
 
-        // 期待値: 1つ目のガウシアンのみタイル内に入る
+        // Expected: Only the 1st Gaussian overlaps the tile
         let expectedData: [Bool] = [true, false]
         let expected = MLXArray(expectedData)
 
         #expect(MLX.allClose(inMask, expected).item())
     }
     @Test func test_computeDxDy() throws {
-        // tile_coord: [B, 2] (例: 2ピクセル)
+        // tile_coord: [B, 2] (e.g., 2 pixels)
         let tileData: [Float] = [
             0.0, 0.0,
             1.0, 2.0,
         ]
         let tile_coord = MLXArray(tileData, [2, 2])  // B=2
 
-        // sorted_means2d: [P, 2] (例: 3ガウス)
+        // sorted_means2d: [P, 2] (e.g., 3 Gaussians)
         let meansData: [Float] = [
             1.0, 1.0,
             2.0, 2.0,
@@ -497,11 +497,11 @@ struct GaussianSplattingMlxTests {
         ]
         let sorted_means2d = MLXArray(meansData, [3, 2])  // P=3
 
-        // 関数適用
+        // Function application
         let dxdy = computeDxDy(tile_coord: tile_coord, sorted_means2d: sorted_means2d)
-        // 期待shape: [2, 3, 2] (B, P, 2)
+        // Expected shape: [2, 3, 2] (B, P, 2)
 
-        // 期待値: 各pixelと各meanの差分
+        // Expected values: difference between each pixel and each mean
         // pixel 0: [0,0] - [1,1] = [-1,-1]
         //          [0,0] - [2,2] = [-2,-2]
         //          [0,0] - [0,2] = [ 0,-2]
@@ -538,27 +538,27 @@ struct GaussianSplattingMlxTests {
         ]
         let sorted_means2d = MLXArray(meansData, [1, 2])
 
-        // sorted_conic: [1,2,2]  ここでは単位行列（identity）
+        // sorted_conic: [1, 2, 2] - Identity matrix here
         let conicData: [Float] = [
             1.0, 0.0,
             0.0, 1.0,
         ]
         let sorted_conic = MLXArray(conicData, [1, 2, 2])
 
-        // 計算
+        // Calculation
         let weights = computeGaussianWeights(
             tile_coord: tile_coord,
             sorted_means2d: sorted_means2d,
             sorted_conic: sorted_conic
         )
-        // shape: [2, 1]（各ピクセル×ガウス）
+        // shape: [2, 1] (each pixel x Gaussian)
 
-        // 期待値:
+        // Expected values:
         // dx: [ [0,0] - [0,1] = [0,-1],   [1,0] - [0,1] = [1,-1] ]
-        // Σ = identity なら
+        // If Σ = identity then
         //   w = exp(-0.5*(dx^T Σ dx)) = exp(-0.5*(x^2 + y^2))
-        // 1点目: [0,-1] → exp(-0.5*(0^2 + 1^2)) = exp(-0.5)
-        // 2点目: [1,-1] → exp(-0.5*(1 + 1)) = exp(-1.0)
+        // 1st point: [0,-1] → exp(-0.5*(0^2 + 1^2)) = exp(-0.5)
+        // 2nd point: [1,-1] → exp(-0.5*(1 + 1)) = exp(-1.0)
         let expectedData: [Float] = [
             exp(-0.5),
             exp(-1.0),
@@ -572,41 +572,41 @@ struct GaussianSplattingMlxTests {
     }
 
     @Test func test_renderTile() throws {
-        // 256x256の標準画像サイズでGaussianRendererを初期化
+        // Initialize GaussianRenderer with standard 256x256 image size
         let tileSize = TILE_SIZE_H_W(w: 256, h: 256)
         let renderer = GaussianRenderer(
             active_sh_degree: 4, W: 256, H: 256, TILE_SIZE: tileSize, whiteBackground: false)
 
-        // 簡単なデータを作成
+        // Create simple data
         let means2DData: [Float] = [
-            32.0, 32.0,  // タイルの中心
-            96.0, 96.0,  // タイルの外
+            32.0, 32.0,  // Tile center
+            96.0, 96.0,  // Outside tile
         ]
         let means2D = MLXArray(means2DData, [2, 2])
 
-        // 共分散行列
+        // Covariance matrix
         let cov2dData: [Float] = [
-            10.0, 0.0, 0.0, 10.0,  // シンプルな対角行列
+            10.0, 0.0, 0.0, 10.0,  // Simple diagonal matrix
             10.0, 0.0, 0.0, 10.0,
         ]
         let cov2d = MLXArray(cov2dData, [2, 2, 2])
 
-        // 色
+        // Color
         let colorData: [Float] = [
-            1.0, 0.0, 0.0,  // 赤
-            0.0, 1.0, 0.0,  // 緑
+            1.0, 0.0, 0.0,  // Red
+            0.0, 1.0, 0.0,  // Green
         ]
         let color = MLXArray(colorData, [2, 3])
 
-        // 不透明度
+        // Opacity
         let opacityData: [Float] = [0.8, 0.5]
         let opacity = MLXArray(opacityData)
 
-        // 深度
+        // Depth
         let depthsData: [Float] = [10.0, 20.0]
         let depths = MLXArray(depthsData)
 
-        // バウンディングボックス
+        // Bounding box
         let radii = MLXArray([10.0, 10.0] as [Float])
         let rect = get_rect(
             pix_coord: means2D,
@@ -615,7 +615,7 @@ struct GaussianSplattingMlxTests {
             height: 256
         )
 
-        // タイル描画
+        // Tile rendering
         let (tile_color, tile_depth, acc_alpha) = renderer.renderTile(
             h: 0,
             w: 0,
@@ -628,21 +628,21 @@ struct GaussianSplattingMlxTests {
             rect: rect
         )
 
-        // タイルのサイズ確認
+        // Verify tile size
         #expect(tile_color.shape == [64, 64, 3])
         #expect(tile_depth.shape == [64, 64, 1])
         #expect(acc_alpha.shape == [64, 64, 1])
 
-        // 中心付近は赤く、不透明度が高いことを確認
+        // Confirm near center is red and has high opacity
         let center_color = tile_color[32, 32]
         let center_alpha = acc_alpha[32, 32]
 
-        // 赤い色が優勢であることを確認
+        // Confirm red color is dominant
         #expect((center_color[0] .> 0.5).shape == [])
         #expect((center_color[1] .< 0.5).shape == [])
         #expect((center_color[2] .< 0.5).shape == [])
 
-        // 中心付近は不透明度が高い
+        // High opacity near center
         #expect((center_alpha[0] .> 0.5).shape == [])
     }
 }

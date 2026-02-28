@@ -163,6 +163,8 @@ func build_covariance_2d(
         + filter[.newAxis]
 }
 
+/// Returns (p_proj [N,4], p_view [N,4], visibleMask [N] bool).
+/// `visibleMask` is a lazy boolean MLXArray — no eval / .item() is triggered.
 func projection_ndc(
     points: MLXArray,
     viewMatrix: MLXArray,
@@ -176,8 +178,9 @@ func projection_ndc(
     let p_w = 1.0 / (points_h[.ellipsis, .stride(from: -1)] + 0.000001)
     let p_proj = points_h * p_w
     let p_view = points_o.matmul(viewMatrix)
-    let in_mask = conditionToIndices(condition: p_view[.ellipsis, 2] .>= maskValue)
-    return (p_proj, p_view, in_mask)
+    // Return lazy boolean mask instead of conditionToIndices (which forces .item() eval).
+    let visibleMask = MLX.stopGradient(p_view[.ellipsis, 2] .>= maskValue)
+    return (p_proj, p_view, visibleMask)
 }
 
 func get_max_covariance(cov2d: MLXArray) -> MLXArray {
@@ -264,7 +267,7 @@ func build_color(
 func matrixInverse2d(_ m: MLXArray) -> MLXArray {
     precondition(
         m.shape.count >= 2 && m.shape.suffix(2) == [2, 2],
-        "input shape should be 2x2"
+        "Input shape should be 2x2"
     )
     let a = m[.ellipsis, 0, 0]
     let b = m[.ellipsis, 0, 1]

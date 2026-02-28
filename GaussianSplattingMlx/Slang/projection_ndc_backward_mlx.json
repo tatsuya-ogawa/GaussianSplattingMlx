@@ -1,0 +1,68 @@
+{
+  "metal": "build/slang_projection/projection_ndc_backward.metal",
+  "entry": "projection_ndc_backward",
+  "kernel_name": "projection_ndc_backward_slang_v1",
+  "kernel_var": "projection_ndc_backwardKernel",
+  "input_names": [
+    "proj_points_1",
+    "proj_viewMatrix_1",
+    "proj_projMatrix_1",
+    "proj_counts_1",
+    "proj_cotMeanNdc_1",
+    "proj_cotPView_1"
+  ],
+  "output_names": [
+    "proj_gradPoints_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\nif(p_0 >= proj_counts_1[int(0)])\n{\n    return;\n}\nuint pBase_0 = p_0 * 3U;\nfloat px_0 = proj_points_1[pBase_0];\nuint _S1 = pBase_0 + 1U;\nfloat py_0 = proj_points_1[_S1];\nuint _S2 = pBase_0 + 2U;\nfloat pz_0 = proj_points_1[_S2];\n\nfloat pv0_0 = px_0 * proj_viewMatrix_1[int(0)] + py_0 * proj_viewMatrix_1[int(4)] + pz_0 * proj_viewMatrix_1[int(8)] + proj_viewMatrix_1[int(12)];\nfloat pv1_0 = px_0 * proj_viewMatrix_1[int(1)] + py_0 * proj_viewMatrix_1[int(5)] + pz_0 * proj_viewMatrix_1[int(9)] + proj_viewMatrix_1[int(13)];\nfloat pv2_0 = px_0 * proj_viewMatrix_1[int(2)] + py_0 * proj_viewMatrix_1[int(6)] + pz_0 * proj_viewMatrix_1[int(10)] + proj_viewMatrix_1[int(14)];\nfloat pv3_0 = px_0 * proj_viewMatrix_1[int(3)] + py_0 * proj_viewMatrix_1[int(7)] + pz_0 * proj_viewMatrix_1[int(11)] + proj_viewMatrix_1[int(15)];\nfloat pc3_0 = pv0_0 * proj_projMatrix_1[int(3)] + pv1_0 * proj_projMatrix_1[int(7)] + pv2_0 * proj_projMatrix_1[int(11)] + pv3_0 * proj_projMatrix_1[int(15)];\n\nfloat w_inv_0 = 1.0 / (pc3_0 + 9.99999997475242708e-07);\n\nuint gBase_0 = p_0 * 4U;\nfloat dm0_0 = proj_cotMeanNdc_1[gBase_0];\nuint _S3 = gBase_0 + 1U;\nfloat dm1_0 = proj_cotMeanNdc_1[_S3];\nuint _S4 = gBase_0 + 2U;\nfloat dm2_0 = proj_cotMeanNdc_1[_S4];\nuint _S5 = gBase_0 + 3U;\nfloat dm3_0 = proj_cotMeanNdc_1[_S5];\nfloat dpc0_0 = dm0_0 * w_inv_0;\nfloat dpc1_0 = dm1_0 * w_inv_0;\nfloat dpc2_0 = dm2_0 * w_inv_0;\n\nfloat dpc3_0 = dm3_0 * w_inv_0 + (dm0_0 * (pv0_0 * proj_projMatrix_1[int(0)] + pv1_0 * proj_projMatrix_1[int(4)] + pv2_0 * proj_projMatrix_1[int(8)] + pv3_0 * proj_projMatrix_1[int(12)]) + dm1_0 * (pv0_0 * proj_projMatrix_1[int(1)] + pv1_0 * proj_projMatrix_1[int(5)] + pv2_0 * proj_projMatrix_1[int(9)] + pv3_0 * proj_projMatrix_1[int(13)]) + dm2_0 * (pv0_0 * proj_projMatrix_1[int(2)] + pv1_0 * proj_projMatrix_1[int(6)] + pv2_0 * proj_projMatrix_1[int(10)] + pv3_0 * proj_projMatrix_1[int(14)]) + dm3_0 * pc3_0) * (- w_inv_0 * w_inv_0);\nfloat dpv0_0 = dpc0_0 * proj_projMatrix_1[int(0)] + dpc1_0 * proj_projMatrix_1[int(1)] + dpc2_0 * proj_projMatrix_1[int(2)] + dpc3_0 * proj_projMatrix_1[int(3)] + proj_cotPView_1[gBase_0];\nfloat dpv1_0 = dpc0_0 * proj_projMatrix_1[int(4)] + dpc1_0 * proj_projMatrix_1[int(5)] + dpc2_0 * proj_projMatrix_1[int(6)] + dpc3_0 * proj_projMatrix_1[int(7)] + proj_cotPView_1[_S3];\nfloat dpv2_0 = dpc0_0 * proj_projMatrix_1[int(8)] + dpc1_0 * proj_projMatrix_1[int(9)] + dpc2_0 * proj_projMatrix_1[int(10)] + dpc3_0 * proj_projMatrix_1[int(11)] + proj_cotPView_1[_S4];\nfloat dpv3_0 = dpc0_0 * proj_projMatrix_1[int(12)] + dpc1_0 * proj_projMatrix_1[int(13)] + dpc2_0 * proj_projMatrix_1[int(14)] + dpc3_0 * proj_projMatrix_1[int(15)] + proj_cotPView_1[_S5];\n\nfloat dph1_0 = dpv0_0 * proj_viewMatrix_1[int(4)] + dpv1_0 * proj_viewMatrix_1[int(5)] + dpv2_0 * proj_viewMatrix_1[int(6)] + dpv3_0 * proj_viewMatrix_1[int(7)];\nfloat dph2_0 = dpv0_0 * proj_viewMatrix_1[int(8)] + dpv1_0 * proj_viewMatrix_1[int(9)] + dpv2_0 * proj_viewMatrix_1[int(10)] + dpv3_0 * proj_viewMatrix_1[int(11)];\n\n*(proj_gradPoints_1+pBase_0) = dpv0_0 * proj_viewMatrix_1[int(0)] + dpv1_0 * proj_viewMatrix_1[int(1)] + dpv2_0 * proj_viewMatrix_1[int(2)] + dpv3_0 * proj_viewMatrix_1[int(3)];\n*(proj_gradPoints_1+_S1) = dph1_0;\n*(proj_gradPoints_1+_S2) = dph2_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "proj_points_1",
+      "buffer_index": 0,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "proj_viewMatrix_1",
+      "buffer_index": 1,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "proj_projMatrix_1",
+      "buffer_index": 2,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "proj_counts_1",
+      "buffer_index": 3,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "proj_cotMeanNdc_1",
+      "buffer_index": 7,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "proj_cotPView_1",
+      "buffer_index": 8,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "proj_gradPoints_1",
+      "buffer_index": 9,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_projection/projection_ndc_backward_mlx.swift"
+}

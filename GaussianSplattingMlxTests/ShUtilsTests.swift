@@ -50,7 +50,7 @@ struct ShUtilsTests {
         let y: Float = -1.0
         let z: Float = 2.0
         let dirs = MLXArray([x, y, z], [1, 3])
-        // degree1まで
+        // Up to degree 1
         var res = C0 * 0.5 - C1 * y * 0.2 + C1 * z * (-0.1) - C1 * x * 0.1
         // degree2
         let xx = x * x

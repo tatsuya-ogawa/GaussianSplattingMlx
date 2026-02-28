@@ -320,8 +320,8 @@ struct RenderView: View {
                     }
                 }
         )
-        .onChange(of: url) { newURL in
-            if let url = newURL {
+        .onChange(of: url) { oldValue, newValue in
+            if let url = newValue {
                 renderQueue.async {
                     do {
                         try viewModel.load(url: url)

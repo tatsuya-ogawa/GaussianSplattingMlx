@@ -1,0 +1,47 @@
+{
+  "metal": "build/slang_projection/get_radius_mask_forward.metal",
+  "entry": "get_radius_mask_forward",
+  "kernel_name": "get_radius_mask_forward_slang_v1",
+  "kernel_var": "get_radius_mask_forwardKernel",
+  "input_names": [
+    "rad_cov2d_1",
+    "rad_visibleMask_1",
+    "rad_counts_1"
+  ],
+  "output_names": [
+    "rad_outRadii_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\nif(p_0 >= rad_counts_1[int(0)])\n{\n    return;\n}\nuint covBase_0 = p_0 * 4U;\nfloat c00_0 = rad_cov2d_1[covBase_0];\n\nfloat c11_0 = rad_cov2d_1[covBase_0 + 3U];\n\nfloat mid_0 = 0.5 * (c00_0 + c11_0);\n*(rad_outRadii_1+p_0) = 3.0 * ceil(sqrt(mid_0 + sqrt(max(mid_0 * mid_0 - (c00_0 * c11_0 - rad_cov2d_1[covBase_0 + 1U] * rad_cov2d_1[covBase_0 + 2U]), 0.00000999999974738)))) * rad_visibleMask_1[p_0];\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "rad_cov2d_1",
+      "buffer_index": 10,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "rad_visibleMask_1",
+      "buffer_index": 11,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "rad_counts_1",
+      "buffer_index": 12,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "rad_outRadii_1",
+      "buffer_index": 13,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_projection/get_radius_mask_forward_mlx.swift"
+}

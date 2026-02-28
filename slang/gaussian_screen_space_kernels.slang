@@ -34,6 +34,21 @@ StructuredBuffer<uint> inverse_counts;
 RWStructuredBuffer<float> inverse_outConic;
 RWStructuredBuffer<float> inverse_gradCov2d;
 
+StructuredBuffer<float> fused_scales;
+StructuredBuffer<float> fused_rotations;
+StructuredBuffer<float> fused_means3d;
+StructuredBuffer<float> fused_shs;
+StructuredBuffer<float> fused_cameraCenter;
+StructuredBuffer<float> fused_viewMatrix;
+StructuredBuffer<float> fused_fovX;
+StructuredBuffer<float> fused_fovY;
+StructuredBuffer<float> fused_focalX;
+StructuredBuffer<float> fused_focalY;
+StructuredBuffer<uint> fused_counts;
+RWStructuredBuffer<float> fused_outColor;
+RWStructuredBuffer<float> fused_outCov2d;
+RWStructuredBuffer<float> fused_outConic;
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void gaussian_screen_color_forward(uint3 tid : SV_DispatchThreadID)
@@ -910,4 +925,213 @@ void gaussian_screen_inverse2d_backward(uint3 tid : SV_DispatchThreadID)
     inverse_gradCov2d[base + 1] = -(t00 * inv10 + t01 * inv11);
     inverse_gradCov2d[base + 2] = -(t10 * inv00 + t11 * inv01);
     inverse_gradCov2d[base + 3] = -(t10 * inv10 + t11 * inv11);
+}
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void gaussian_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
+{
+    uint p = tid.x;
+    uint pointCount = fused_counts[0];
+    if (p >= pointCount)
+    {
+        return;
+    }
+
+    // ---- cov3d from scales/rotations ----
+    uint scaleBase = p * 3;
+    float sx = fused_scales[scaleBase + 0];
+    float sy = fused_scales[scaleBase + 1];
+    float sz = fused_scales[scaleBase + 2];
+
+    uint rotBase = p * 4;
+    float rw = fused_rotations[rotBase + 0];
+    float rx = fused_rotations[rotBase + 1];
+    float ry = fused_rotations[rotBase + 2];
+    float rz = fused_rotations[rotBase + 3];
+
+    float norm = sqrt(rw * rw + rx * rx + ry * ry + rz * rz);
+    float safeNorm = max(norm, 1e-8);
+    float qw = rw / safeNorm;
+    float qx = rx / safeNorm;
+    float qy = ry / safeNorm;
+    float qz = rz / safeNorm;
+
+    float r00 = 1.0 - 2.0 * (qy * qy + qz * qz);
+    float r01 = 2.0 * (qx * qy - qw * qz);
+    float r02 = 2.0 * (qx * qz + qw * qy);
+    float r10 = 2.0 * (qx * qy + qw * qz);
+    float r11 = 1.0 - 2.0 * (qx * qx + qz * qz);
+    float r12 = 2.0 * (qy * qz - qw * qx);
+    float r20 = 2.0 * (qx * qz - qw * qy);
+    float r21 = 2.0 * (qy * qz + qw * qx);
+    float r22 = 1.0 - 2.0 * (qx * qx + qy * qy);
+
+    float l00 = r00 * sx;
+    float l01 = r01 * sy;
+    float l02 = r02 * sz;
+    float l10 = r10 * sx;
+    float l11 = r11 * sy;
+    float l12 = r12 * sz;
+    float l20 = r20 * sx;
+    float l21 = r21 * sy;
+    float l22 = r22 * sz;
+
+    float cv3d00 = l00 * l00 + l01 * l01 + l02 * l02;
+    float cv3d01 = l00 * l10 + l01 * l11 + l02 * l12;
+    float cv3d02 = l00 * l20 + l01 * l21 + l02 * l22;
+    float cv3d10 = l10 * l00 + l11 * l01 + l12 * l02;
+    float cv3d11 = l10 * l10 + l11 * l11 + l12 * l12;
+    float cv3d12 = l10 * l20 + l11 * l21 + l12 * l22;
+    float cv3d20 = l20 * l00 + l21 * l01 + l22 * l02;
+    float cv3d21 = l20 * l10 + l21 * l11 + l22 * l12;
+    float cv3d22 = l20 * l20 + l21 * l21 + l22 * l22;
+
+    // ---- SH basis + color ----
+    uint meansBase = p * 3;
+    int degree = int(fused_counts[1]);
+    int coeffCount = (degree + 1) * (degree + 1);
+    int coeffStride = int(fused_counts[2]);
+
+    float x = fused_means3d[meansBase + 0] - fused_cameraCenter[0];
+    float y = fused_means3d[meansBase + 1] - fused_cameraCenter[1];
+    float z = fused_means3d[meansBase + 2] - fused_cameraCenter[2];
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+    float xy = x * y;
+    float yz = y * z;
+    float xz = x * z;
+
+    float basis[25];
+    for (int i = 0; i < 25; ++i)
+    {
+        basis[i] = 0.0;
+    }
+
+    basis[0] = 0.28209479177387814;
+    if (degree > 0)
+    {
+        basis[1] = -0.4886025119029199 * y;
+        basis[2] = 0.4886025119029199 * z;
+        basis[3] = -0.4886025119029199 * x;
+    }
+    if (degree > 1)
+    {
+        basis[4] = 1.0925484305920792 * xy;
+        basis[5] = -1.0925484305920792 * yz;
+        basis[6] = 0.31539156525252005 * (2.0 * zz - xx - yy);
+        basis[7] = -1.0925484305920792 * xz;
+        basis[8] = 0.5462742152960396 * (xx - yy);
+    }
+    if (degree > 2)
+    {
+        basis[9] = -0.5900435899266435 * y * (3.0 * xx - yy);
+        basis[10] = 2.890611442640554 * xy * z;
+        basis[11] = -0.4570457994644658 * y * (4.0 * zz - xx - yy);
+        basis[12] = 0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+        basis[13] = -0.4570457994644658 * x * (4.0 * zz - xx - yy);
+        basis[14] = 1.445305721320277 * z * (xx - yy);
+        basis[15] = -0.5900435899266435 * x * (xx - 3.0 * yy);
+    }
+    if (degree > 3)
+    {
+        basis[16] = 2.5033429417967046 * xy * (xx - yy);
+        basis[17] = -1.7701307697799304 * yz * (3.0 * xx - yy);
+        basis[18] = 0.9461746957575601 * xy * (7.0 * zz - 1.0);
+        basis[19] = -0.6690465435572892 * yz * (7.0 * zz - 3.0);
+        basis[20] = 0.10578554691520431 * (zz * (35.0 * zz - 30.0) + 3.0);
+        basis[21] = -0.6690465435572892 * xz * (7.0 * zz - 3.0);
+        basis[22] = 0.47308734787878004 * (xx - yy) * (7.0 * zz - 1.0);
+        basis[23] = -1.7701307697799304 * xz * (xx - 3.0 * yy);
+        basis[24] = 0.6258357354491761 * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy));
+    }
+
+    uint colorBase = p * 3;
+    uint shPointBase = p * uint(coeffStride * 3);
+    for (int ch = 0; ch < 3; ++ch)
+    {
+        float value = 0.0;
+        for (int k = 0; k < coeffCount; ++k)
+        {
+            uint shIndex = shPointBase + uint(k * 3 + ch);
+            value += basis[k] * fused_shs[shIndex];
+        }
+        float color = value + 0.5;
+        fused_outColor[colorBase + uint(ch)] = color < 0.0 ? 0.0 : color;
+    }
+
+    // ---- cov2d from cov3d ----
+    float m0 = fused_means3d[meansBase + 0];
+    float m1 = fused_means3d[meansBase + 1];
+    float m2 = fused_means3d[meansBase + 2];
+
+    float a00 = fused_viewMatrix[0 * 4 + 0];
+    float a01 = fused_viewMatrix[0 * 4 + 1];
+    float a02 = fused_viewMatrix[0 * 4 + 2];
+    float a10 = fused_viewMatrix[1 * 4 + 0];
+    float a11 = fused_viewMatrix[1 * 4 + 1];
+    float a12 = fused_viewMatrix[1 * 4 + 2];
+    float a20 = fused_viewMatrix[2 * 4 + 0];
+    float a21 = fused_viewMatrix[2 * 4 + 1];
+    float a22 = fused_viewMatrix[2 * 4 + 2];
+
+    float t0 = m0 * a00 + m1 * a10 + m2 * a20 + fused_viewMatrix[3 * 4 + 0];
+    float t1 = m0 * a01 + m1 * a11 + m2 * a21 + fused_viewMatrix[3 * 4 + 1];
+    float t2 = m0 * a02 + m1 * a12 + m2 * a22 + fused_viewMatrix[3 * 4 + 2];
+
+    float tanFovX = tan(fused_fovX[0] * 0.5);
+    float tanFovY = tan(fused_fovY[0] * 0.5);
+    float clipX = clamp(t2, -tanFovX * 1.3, tanFovX * 1.3);
+    float clipY = clamp(t2, -tanFovY * 1.3, tanFovY * 1.3);
+    float tx = t0 / clipX * t2;
+    float ty = t1 / clipY * t2;
+    float tz = t2;
+
+    float j00 = fused_focalX[0] / tz;
+    float j02 = -tx * fused_focalX[0] / (tz * tz);
+    float j11 = fused_focalY[0] / tz;
+    float j12 = -ty * fused_focalY[0] / (tz * tz);
+
+    float w00 = a00;
+    float w01 = a10;
+    float w02 = a20;
+    float w10 = a01;
+    float w11 = a11;
+    float w12 = a21;
+    float w20 = a02;
+    float w21 = a12;
+    float w22 = a22;
+
+    float b00 = j00 * w00 + j02 * w20;
+    float b01 = j00 * w01 + j02 * w21;
+    float b02 = j00 * w02 + j02 * w22;
+    float b10 = j11 * w10 + j12 * w20;
+    float b11 = j11 * w11 + j12 * w21;
+    float b12 = j11 * w12 + j12 * w22;
+
+    float tt00 = b00 * cv3d00 + b01 * cv3d10 + b02 * cv3d20;
+    float tt01 = b00 * cv3d01 + b01 * cv3d11 + b02 * cv3d21;
+    float tt02 = b00 * cv3d02 + b01 * cv3d12 + b02 * cv3d22;
+    float tt10 = b10 * cv3d00 + b11 * cv3d10 + b12 * cv3d20;
+    float tt11 = b10 * cv3d01 + b11 * cv3d11 + b12 * cv3d21;
+    float tt12 = b10 * cv3d02 + b11 * cv3d12 + b12 * cv3d22;
+
+    uint outBase = p * 4;
+    float cv2d00 = tt00 * b00 + tt01 * b01 + tt02 * b02 + 0.3;
+    float cv2d01 = tt00 * b10 + tt01 * b11 + tt02 * b12;
+    float cv2d10 = tt10 * b00 + tt11 * b01 + tt12 * b02;
+    float cv2d11 = tt10 * b10 + tt11 * b11 + tt12 * b12 + 0.3;
+
+    fused_outCov2d[outBase + 0] = cv2d00;
+    fused_outCov2d[outBase + 1] = cv2d01;
+    fused_outCov2d[outBase + 2] = cv2d10;
+    fused_outCov2d[outBase + 3] = cv2d11;
+
+    // ---- conic = inv(cov2d) ----
+    float det = cv2d00 * cv2d11 - cv2d01 * cv2d10;
+    fused_outConic[outBase + 0] = cv2d11 / det;
+    fused_outConic[outBase + 1] = -cv2d01 / det;
+    fused_outConic[outBase + 2] = -cv2d10 / det;
+    fused_outConic[outBase + 3] = cv2d00 / det;
 }

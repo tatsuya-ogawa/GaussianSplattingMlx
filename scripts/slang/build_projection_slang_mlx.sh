@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+OUT_DIR="${1:-$ROOT_DIR/build/slang_projection}"
+if [[ "$OUT_DIR" != /* ]]; then
+  OUT_DIR="$ROOT_DIR/$OUT_DIR"
+fi
+
+BUNDLE_DIR="${2:-$ROOT_DIR/GaussianSplattingMlx/Slang}"
+if [[ "$BUNDLE_DIR" != /* ]]; then
+  BUNDLE_DIR="$ROOT_DIR/$BUNDLE_DIR"
+fi
+
+SLANG_SRC="$ROOT_DIR/slang/gaussian_projection_kernels.slang"
+CONVERTER="$ROOT_DIR/scripts/slang/convert_slang_metal_to_mlx.py"
+
+mkdir -p "$OUT_DIR"
+
+if [[ "$OUT_DIR" == "$ROOT_DIR" ]]; then
+  OUT_DIR_REL="."
+elif [[ "$OUT_DIR" == "$ROOT_DIR/"* ]]; then
+  OUT_DIR_REL="${OUT_DIR#"$ROOT_DIR/"}"
+else
+  echo "OUT_DIR must be inside repository: $OUT_DIR" >&2
+  exit 1
+fi
+
+if command -v slangc >/dev/null 2>&1; then
+  SLANGC_CMD=(slangc)
+  SLANG_SRC_ARG="$SLANG_SRC"
+  OUT_DIR_ARG="$OUT_DIR"
+  SLANG_INCLUDE_ARG="$ROOT_DIR/slang"
+elif docker image inspect slang-slang >/dev/null 2>&1; then
+  SLANGC_CMD=(docker run --rm -v "$ROOT_DIR:/work" -w /work slang-slang slangc)
+  SLANG_SRC_ARG="/work/slang/gaussian_projection_kernels.slang"
+  OUT_DIR_ARG="/work/$OUT_DIR_REL"
+  SLANG_INCLUDE_ARG="/work/slang"
+else
+  echo "slangc not found and docker image 'slang-slang' is unavailable." >&2
+  echo "Install slangc or build the docker image first." >&2
+  exit 1
+fi
+
+entries=(
+  projection_ndc_forward
+  projection_ndc_backward
+  get_radius_mask_forward
+  gaussian_projection_screen_fused_forward
+)
+
+for entry in "${entries[@]}"; do
+  echo "[slang-projection] compiling $entry"
+  "${SLANGC_CMD[@]}" "$SLANG_SRC_ARG" -I "$SLANG_INCLUDE_ARG" -target metal -entry "$entry" -stage compute -o "$OUT_DIR_ARG/$entry.metal"
+
+  echo "[slang-projection] converting $entry -> MLX JSON"
+  input_names=""
+  output_names=""
+  case "$entry" in
+    projection_ndc_forward)
+      input_names="proj_points_1,proj_viewMatrix_1,proj_projMatrix_1,proj_counts_1"
+      output_names="proj_outMeanNdc_1,proj_outPView_1,proj_outVisibleMask_1"
+      ;;
+    projection_ndc_backward)
+      input_names="proj_points_1,proj_viewMatrix_1,proj_projMatrix_1,proj_counts_1,proj_cotMeanNdc_1,proj_cotPView_1"
+      output_names="proj_gradPoints_1"
+      ;;
+    get_radius_mask_forward)
+      input_names="rad_cov2d_1,rad_visibleMask_1,rad_counts_1"
+      output_names="rad_outRadii_1"
+      ;;
+    gaussian_projection_screen_fused_forward)
+      input_names="fused_scales_1,fused_rotations_1,fused_means3d_1,fused_shs_1,fused_cameraCenter_1,fused_viewMatrix_1,fused_projMatrix_1,fused_fovX_1,fused_fovY_1,fused_focalX_1,fused_focalY_1,fused_imageWidth_1,fused_imageHeight_1,fused_counts_1"
+      output_names="fused_outMeans2d_1,fused_outDepths_1,fused_outColor_1,fused_outCov2d_1,fused_outConic_1,fused_outRadii_1"
+      ;;
+    *)
+      echo "Unknown entry: $entry" >&2
+      exit 1
+      ;;
+  esac
+
+  python3 "$CONVERTER" \
+    --metal "$OUT_DIR/$entry.metal" \
+    --entry "$entry" \
+    --kernel-name "${entry}_slang_v1" \
+    --input-names "$input_names" \
+    --output-names "$output_names" \
+    --swift-out "$OUT_DIR/${entry}_mlx.swift" \
+    --json-out "$OUT_DIR/${entry}_mlx.json"
+done
+
+mkdir -p "$BUNDLE_DIR"
+cp "$OUT_DIR"/*_mlx.json "$BUNDLE_DIR/"
+
+echo "[slang-projection] done"
+echo "[slang-projection] generated JSON copied to: $BUNDLE_DIR"

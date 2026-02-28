@@ -1,0 +1,103 @@
+{
+  "metal": "build/slang_ssim/ssim_backward.metal",
+  "entry": "ssim_backward",
+  "kernel_name": "ssim_backward_slang_v1",
+  "kernel_var": "ssim_backwardKernel",
+  "input_names": [
+    "ssb_gradOutput_1",
+    "ssb_img1_1",
+    "ssb_img2_1",
+    "ssb_mu1_1",
+    "ssb_mu2_1",
+    "ssb_sigma1_1",
+    "ssb_sigma2_1",
+    "ssb_sigma12_1",
+    "ssb_window_1",
+    "ssb_params_1"
+  ],
+  "output_names": [
+    "ssb_gradImg1_1",
+    "ssb_gradImg2_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint H_0 = ssb_params_1[int(0)];\nuint W_0 = ssb_params_1[int(1)];\nuint C_0 = ssb_params_1[int(2)];\nuint K_0 = ssb_params_1[int(3)];\nuint _S1 = K_0 / 2U;\n\nuint idx_0 = tid_0.x;\nif(idx_0 >= (H_0 * W_0 * C_0))\n{\n    return;\n}\nuint _S2 = idx_0 % C_0;\nuint tmp_0 = idx_0 / C_0;\nuint _S3 = tmp_0 % W_0;\nuint _S4 = tmp_0 / W_0;\nfloat _S5 = ssb_img1_1[idx_0];\nfloat _S6 = ssb_img2_1[idx_0];\nuint ki_0 = 0U;\nfloat grad1_0 = 0.0;\nfloat grad2_0 = 0.0;\nfor(;;)\n{\n    if(ki_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    int _S7 = int(_S1);\n    int cx_0 = int(_S4) - int(ki_0) + _S7;\n    bool _S8;\n    if(cx_0 < int(0))\n    {\n        _S8 = true;\n    }\n    else\n    {\n        _S8 = cx_0 >= int(H_0);\n    }\n    float grad1_1;\n    float grad2_1;\n    if(_S8)\n    {\n        grad1_1 = grad1_0;\n        grad2_1 = grad2_0;\n        ki_0 = ki_0 + 1U;\n        grad1_0 = grad1_1;\n        grad2_0 = grad2_1;\n        continue;\n    }\n    uint kj_0 = 0U;\n    grad1_1 = grad1_0;\n    grad2_1 = grad2_0;\n\n    for(;;)\n    {\n        if(kj_0 < K_0)\n        {\n        }\n        else\n        {\n            break;\n        }\n        int cy_0 = int(_S3) - int(kj_0) + _S7;\n        bool _S9;\n        if(cy_0 < int(0))\n        {\n            _S9 = true;\n        }\n        else\n        {\n            _S9 = cy_0 >= int(W_0);\n        }\n        if(_S9)\n        {\n            kj_0 = kj_0 + 1U;\n            continue;\n        }\n\n        float wt_0 = ssb_window_1[ki_0 * K_0 + kj_0];\n        uint cIdx_0 = uint(cx_0) * W_0 * C_0 + uint(cy_0) * C_0 + _S2;\n\n        float upstream_0 = ssb_gradOutput_1[cIdx_0];\n        float m1_0 = ssb_mu1_1[cIdx_0];\n        float m2_0 = ssb_mu2_1[cIdx_0];\n        float _S10 = 2.0 * m1_0;\n        float a_0 = _S10 * m2_0 + 0.00009999999747379;\n        float b_0 = 2.0 * ssb_sigma12_1[cIdx_0] + 0.00089999998454005;\n        float c_0 = m1_0 * m1_0 + m2_0 * m2_0 + 0.00009999999747379;\n        float d_0 = ssb_sigma1_1[cIdx_0] + ssb_sigma2_1[cIdx_0] + 0.00089999998454005;\n        float den_0 = c_0 * d_0;\n        float den2_0 = den_0 * den_0;\n        float num_0 = a_0 * b_0;\n\n        float _S11 = num_0 * 2.0;\n\n        float _S12 = - num_0 * c_0;\n\n        float dS_ds12_0 = 2.0 * a_0 / den_0;\n        float _S13 = 2.0 * wt_0;\n        float _S14 = _S5 - m1_0;\n        float _S15 = _S6 - m2_0;\n        float grad2_2 = grad2_1 + upstream_0 * ((_S10 * b_0 * den_0 - _S11 * m2_0 * d_0) / den2_0 * wt_0 + _S12 / den2_0 * (_S13 * _S15) + dS_ds12_0 * (wt_0 * _S14));\n        grad1_1 = grad1_1 + upstream_0 * ((2.0 * m2_0 * b_0 * den_0 - _S11 * m1_0 * d_0) / den2_0 * wt_0 + _S12 / den2_0 * (_S13 * _S14) + dS_ds12_0 * (wt_0 * _S15));\n        grad2_1 = grad2_2;\n        kj_0 = kj_0 + 1U;\n    }\n    ki_0 = ki_0 + 1U;\n    grad1_0 = grad1_1;\n    grad2_0 = grad2_1;\n}\n*(ssb_gradImg1_1+idx_0) = grad1_0;\n*(ssb_gradImg2_1+idx_0) = grad2_0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "ssb_gradOutput_1",
+      "buffer_index": 10,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_img1_1",
+      "buffer_index": 11,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_img2_1",
+      "buffer_index": 12,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_mu1_1",
+      "buffer_index": 13,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_mu2_1",
+      "buffer_index": 14,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_sigma1_1",
+      "buffer_index": 15,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_sigma2_1",
+      "buffer_index": 16,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_sigma12_1",
+      "buffer_index": 17,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_window_1",
+      "buffer_index": 18,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_params_1",
+      "buffer_index": 19,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "ssb_gradImg1_1",
+      "buffer_index": 20,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "ssb_gradImg2_1",
+      "buffer_index": 21,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_ssim/ssim_backward_mlx.swift"
+}
