@@ -30,6 +30,8 @@ RWStructuredBuffer<float> fused_outColor;    // [N*3]
 RWStructuredBuffer<float> fused_outCov2d;    // [N*4]
 RWStructuredBuffer<float> fused_outConic;    // [N*4]
 RWStructuredBuffer<float> fused_outRadii;    // [N]
+RWStructuredBuffer<float> fused_outRectMin;  // [N*2]
+RWStructuredBuffer<float> fused_outRectMax;  // [N*2]
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
@@ -150,7 +152,24 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     fused_outConic[covBase + 3] = fusedOut.conic.w;
 
     float radius = computeRadiusFromCov2d(fusedOut.cov2d);
-    fused_outRadii[p] = radius * visibleMask;
+    float visibleRadius = radius * visibleMask;
+    fused_outRadii[p] = visibleRadius;
+
+    float maxX = fused_imageWidth[0] - 1.0f;
+    float maxY = fused_imageHeight[0] - 1.0f;
+    float minX = fusedOut.means2d.x - visibleRadius;
+    float minY = fusedOut.means2d.y - visibleRadius;
+    float maxRectX = fusedOut.means2d.x + visibleRadius;
+    float maxRectY = fusedOut.means2d.y + visibleRadius;
+    if (minX < 0.0f) { minX = 0.0f; }
+    if (minY < 0.0f) { minY = 0.0f; }
+    if (maxRectX > maxX) { maxRectX = maxX; }
+    if (maxRectY > maxY) { maxRectY = maxY; }
+
+    fused_outRectMin[means2dBase + 0] = minX;
+    fused_outRectMin[means2dBase + 1] = minY;
+    fused_outRectMax[means2dBase + 0] = maxRectX;
+    fused_outRectMax[means2dBase + 1] = maxRectY;
 }
 
 // ---------------------------------------------------------------------------
