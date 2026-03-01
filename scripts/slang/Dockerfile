@@ -5,7 +5,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl jq tar \
+    && apt-get install -y --no-install-recommends ca-certificates curl jq tar libxml2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
