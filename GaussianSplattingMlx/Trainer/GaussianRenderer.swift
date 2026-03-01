@@ -619,64 +619,6 @@ class GaussianRenderer {
         )
     }
 
-    // MARK: - Projection NDC custom function (forward + backward)
-
-    private lazy var projectionNdcCustomFunction: (([MLXArray]) -> [MLXArray])? = {
-        guard useScreenSpaceCustomOp else { return nil }
-        guard
-            let forwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "projection_ndc_forward_mlx"),
-            let backwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "projection_ndc_backward_mlx")
-        else {
-            Logger.shared.debug("projection_ndc kernels unavailable. Fallback path is used.")
-            return nil
-        }
-
-        let forward: ([MLXArray]) -> [MLXArray] = { inputs in
-            let points = inputs[0]       // [N, 3]
-            let viewMatrix = inputs[1]   // [4, 4]
-            let projMatrix = inputs[2]   // [4, 4]
-            let activeCount = points.shape[0]
-            let paddedCount = Swift.max(activeCount, 1)
-            let pointsPadded = Self.padFirstDimToAtLeast(points, count: paddedCount)
-            let counts = MLXArray([UInt32(paddedCount)])
-
-            let results = forwardKernel(
-                [pointsPadded, viewMatrix, projMatrix, counts],
-                grid: (max(paddedCount, 1), 1, 1),
-                threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-                outputShapes: [[paddedCount, 4], [paddedCount, 4], [paddedCount]],
-                outputDTypes: [points.dtype, points.dtype, points.dtype]
-            )
-
-            return [
-                Self.sliceFirstDim(results[0], count: activeCount),  // mean_ndc [N, 4]
-                Self.sliceFirstDim(results[1], count: activeCount),  // p_view [N, 4]
-                Self.sliceFirstDim(results[2], count: activeCount),  // visibleMask [N]
-            ]
-        }
-
-        let renderer = self
-        return CustomFunction {
-            Forward(forward)
-            VJP { primals, cotangents in
-                if let profiler = renderer.profiler {
-                    return profiler.measure("bwd.projection_ndc") {
-                        let result = Self._projectionNdcVJP(
-                            primals: primals, cotangents: cotangents,
-                            backwardKernel: backwardKernel)
-                        eval(result)
-                        return result
-                    }
-                }
-                return Self._projectionNdcVJP(
-                    primals: primals, cotangents: cotangents,
-                    backwardKernel: backwardKernel)
-            }
-        }
-    }()
-
     private static func _projectionNdcVJP(
         primals: [MLXArray], cotangents: [MLXArray],
         backwardKernel: MLXFast.MLXFastKernel
@@ -722,28 +664,6 @@ class GaussianRenderer {
         }
         return kernel
     }()
-
-    private func computeRadiiWithMask(cov2d: MLXArray, visibleMask: MLXArray) -> MLXArray {
-        if let getRadiusMaskKernel {
-            let activeCount = cov2d.shape[0]
-            let paddedCount = Swift.max(activeCount, 1)
-            let cov2dPadded = Self.padFirstDimToAtLeast(
-                cov2d.reshaped([-1, 4]), count: paddedCount)
-            let maskPadded = Self.padFirstDimToAtLeast(visibleMask, count: paddedCount)
-            let counts = MLXArray([UInt32(paddedCount)])
-            let result = getRadiusMaskKernel(
-                [cov2dPadded, maskPadded, counts],
-                grid: (max(paddedCount, 1), 1, 1),
-                threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-                outputShapes: [[paddedCount]],
-                outputDTypes: [cov2d.dtype]
-            )[0]
-            return MLX.stopGradient(Self.sliceFirstDim(result, count: activeCount))
-        }
-        // Fallback: pure MLX
-        let radii = get_radius(cov2d: cov2d)
-        return MLX.stopGradient(radii * visibleMask.asType(radii.dtype))
-    }
 
     private lazy var covariance3DCustomFunction: (([MLXArray]) -> [MLXArray])? = {
         guard useScreenSpaceCustomOp else {
