@@ -1,11 +1,11 @@
 services:
   slang:
     build:
-      context: ..
-      dockerfile: slang/Dockerfile
+      context: ../..
+      dockerfile: scripts/slang/Dockerfile
     working_dir: /work
     volumes:
-      - ..:/work
+      - ../..:/work
     entrypoint: ["/bin/bash", "-lc"]
     command:
       - >

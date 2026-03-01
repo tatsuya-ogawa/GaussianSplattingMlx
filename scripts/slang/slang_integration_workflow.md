@@ -25,7 +25,10 @@ This guide serves as a workflow for AI agents and developers working in this rep
    - Invocation site: `GaussianSplattingMlx/Trainer/GaussianRenderer.swift`
 3. Verify generation scripts:
    - For Tile operations: `scripts/slang/build_tile_slang_mlx.sh`
-   - For Screen-space: `scripts/slang/build_screen_space_slang_mlx.sh`
+    - For Screen-space: `scripts/slang/build_screen_space_slang_mlx.sh`
+4. Identify Docker environment:
+   - Configuration location: `scripts/slang/compose.yml`
+   - Build definition: `scripts/slang/Dockerfile`
 
 ## 2. Edit Phase
 
@@ -35,6 +38,7 @@ This guide serves as a workflow for AI agents and developers working in this rep
 2. If new entry names are assigned:
    - Make sure to add the new name to the `entries=(...)` list at the top of the relevant bash build script.
    - Register proper `input_names` and `output_names` matching logic within the `case` blocks.
+   - **Crucial**: Also update the `command` section in `scripts/slang/compose.yml` to include the new entry point if you want Docker-based builds to stay in sync.
 3. If new plumbing is needed in Swift:
    - Request the new spec utilizing `SlangKernelSpecLoader.loadKernel(named: "..._mlx")`.
    - Manually wrap inputs and outputs through `CustomFunction { Forward ... VJP ... }` inside `GaussianRenderer`.
@@ -42,10 +46,14 @@ This guide serves as a workflow for AI agents and developers working in this rep
 ## 3. Generate Phase (Slang -> Metal -> MLX JSON)
 
 Preferred route via scripting:
-
 ```bash
+# Using standard build scripts
 bash scripts/slang/build_tile_slang_mlx.sh
 bash scripts/slang/build_screen_space_slang_mlx.sh
+
+# OR using Docker Compose for cleaner environment management (slangc -> .metal)
+docker compose -f scripts/slang/compose.yml build
+docker compose -f scripts/slang/compose.yml up
 ```
 
 In scenarios where environment checks block the shell script, apply a manual fallback (example below using Tile Forward / Backward setup):
@@ -132,5 +140,7 @@ The identifier called at the Swift side inside `loadKernel(named: "...")` must r
 - `scripts/slang/build_tile_slang_mlx.sh`
 - `scripts/slang/build_screen_space_slang_mlx.sh`
 - `scripts/slang/convert_slang_metal_to_mlx.py`
+- `scripts/slang/compose.yml`
+- `scripts/slang/Dockerfile`
 - `GaussianSplattingMlx/Slang/*_mlx.json`
 - `GaussianSplattingMlx/Trainer/GaussianRenderer.swift`
