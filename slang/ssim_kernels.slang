@@ -11,6 +11,15 @@
 static const uint SSIM_MAX_K = 32;
 static const float SSIM_SIGMA = 1.5;
 
+struct SsimAccumState : IDifferentiable
+{
+    float mu1;
+    float mu2;
+    float sumW1Sq;
+    float sumW2Sq;
+    float sumW12;
+};
+
 // ---------------------------------------------------------------------------
 // ssim_forward
 // ---------------------------------------------------------------------------
@@ -26,24 +35,50 @@ RWStructuredBuffer<float> ssf_outSigma2;  // [H*W*C]
 RWStructuredBuffer<float> ssf_outSigma12; // [H*W*C]
 
 [Differentiable]
-float ssimFromCenterAndTargetPixel(
+SsimAccumState updateSsimAccumState(
+    SsimAccumState prevState,
     float v1,
     float v2,
-    no_diff float wt,
-    no_diff float baseMu1,
-    no_diff float baseMu2,
-    no_diff float baseSumW1Sq,
-    no_diff float baseSumW2Sq,
-    no_diff float baseSumW12,
+    no_diff float wt
+)
+{
+    SsimAccumState nextState;
+    nextState.mu1 = prevState.mu1 + wt * v1;
+    nextState.mu2 = prevState.mu2 + wt * v2;
+    nextState.sumW1Sq = prevState.sumW1Sq + wt * v1 * v1;
+    nextState.sumW2Sq = prevState.sumW2Sq + wt * v2 * v2;
+    nextState.sumW12 = prevState.sumW12 + wt * v1 * v2;
+    return nextState;
+}
+
+SsimAccumState undoSsimAccumState(
+    SsimAccumState currentState,
+    float v1,
+    float v2,
+    float wt
+)
+{
+    SsimAccumState prevState;
+    prevState.mu1 = currentState.mu1 - wt * v1;
+    prevState.mu2 = currentState.mu2 - wt * v2;
+    prevState.sumW1Sq = currentState.sumW1Sq - wt * v1 * v1;
+    prevState.sumW2Sq = currentState.sumW2Sq - wt * v2 * v2;
+    prevState.sumW12 = currentState.sumW12 - wt * v1 * v2;
+    return prevState;
+}
+
+[Differentiable]
+float ssimFromAccumState(
+    SsimAccumState state,
     no_diff float C1,
     no_diff float C2
 )
 {
-    float mu1 = baseMu1 + wt * v1;
-    float mu2 = baseMu2 + wt * v2;
-    float sumW1Sq = baseSumW1Sq + wt * v1 * v1;
-    float sumW2Sq = baseSumW2Sq + wt * v2 * v2;
-    float sumW12 = baseSumW12 + wt * v1 * v2;
+    float mu1 = state.mu1;
+    float mu2 = state.mu2;
+    float sumW1Sq = state.sumW1Sq;
+    float sumW2Sq = state.sumW2Sq;
+    float sumW12 = state.sumW12;
 
     float sigma1Sq = sumW1Sq - mu1 * mu1;
     float sigma2Sq = sumW2Sq - mu2 * mu2;
@@ -76,11 +111,12 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
     uint w_pos = tmp % W;
     uint h_pos = tmp / W;
 
-    float sum_w1 = 0.0;
-    float sum_w2 = 0.0;
-    float sum_w1sq = 0.0;
-    float sum_w2sq = 0.0;
-    float sum_w12 = 0.0;
+    SsimAccumState state;
+    state.mu1 = 0.0;
+    state.mu2 = 0.0;
+    state.sumW1Sq = 0.0;
+    state.sumW2Sq = 0.0;
+    state.sumW12 = 0.0;
     float w1d[SSIM_MAX_K];
     float center = float(K) * 0.5;
     float invTwoSigmaSq = 1.0 / (2.0 * SSIM_SIGMA * SSIM_SIGMA);
@@ -112,30 +148,20 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
             float v1 = ssf_img1[srcIdx];
             float v2 = ssf_img2[srcIdx];
 
-            sum_w1 += wt * v1;
-            sum_w2 += wt * v2;
-            sum_w1sq += wt * v1 * v1;
-            sum_w2sq += wt * v2 * v2;
-            sum_w12 += wt * v1 * v2;
+            state = updateSsimAccumState(state, v1, v2, wt);
         }
     }
 
-    float mu1 = sum_w1;
-    float mu2 = sum_w2;
-    float sigma1_sq = sum_w1sq - mu1 * mu1;
-    float sigma2_sq = sum_w2sq - mu2 * mu2;
-    float sigma12 = sum_w12 - mu1 * mu2;
+    float mu1 = state.mu1;
+    float mu2 = state.mu2;
+    float sigma1_sq = state.sumW1Sq - mu1 * mu1;
+    float sigma2_sq = state.sumW2Sq - mu2 * mu2;
+    float sigma12 = state.sumW12 - mu1 * mu2;
 
     float C1 = 0.0001;   // (0.01 * 1.0)^2
     float C2 = 0.0009;   // (0.03 * 1.0)^2
 
-    float a = 2.0 * mu1 * mu2 + C1;
-    float b = 2.0 * sigma12 + C2;
-    float c_ = mu1 * mu1 + mu2 * mu2 + C1;
-    float d = sigma1_sq + sigma2_sq + C2;
-    float den = c_ * d;
-
-    float ssim_val = (a * b) / den;
+    float ssim_val = ssimFromAccumState(state, C1, C2);
 
     ssf_outSsim[idx] = ssim_val;
     ssf_outMu1[idx] = mu1;
@@ -150,7 +176,8 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
 // ---------------------------------------------------------------------------
 // For each output pixel (h, w, c), iterate over all 11×11 windows
 // that contain this pixel. At each window center, use saved stats and
-// recover per-pixel gradient through bwd_diff(ssimFromCenterAndTargetPixel).
+// recover per-pixel gradient through bwd_diff(ssimFromAccumState) and
+// bwd_diff(updateSsimAccumState).
 //
 // (Similarly for grad_img2)
 
@@ -232,32 +259,34 @@ void ssim_backward(uint3 tid : SV_DispatchThreadID)
             float s2 = ssb_sigma2[cIdx];
             float s12 = ssb_sigma12[cIdx];
 
-            // Recover fixed "all other pixels" contributions for this center.
-            float sumW1Sq = s1 + m1 * m1;
-            float sumW2Sq = s2 + m2 * m2;
-            float sumW12 = s12 + m1 * m2;
-            float baseMu1 = m1 - wt * v1;
-            float baseMu2 = m2 - wt * v2;
-            float baseSumW1Sq = sumW1Sq - wt * v1 * v1;
-            float baseSumW2Sq = sumW2Sq - wt * v2 * v2;
-            float baseSumW12 = sumW12 - wt * v1 * v2;
+            SsimAccumState currentState;
+            currentState.mu1 = m1;
+            currentState.mu2 = m2;
+            currentState.sumW1Sq = s1 + m1 * m1;
+            currentState.sumW2Sq = s2 + m2 * m2;
+            currentState.sumW12 = s12 + m1 * m2;
+
+            DifferentialPair<SsimAccumState> dpCurrentState = diffPair(currentState);
+            bwd_diff(ssimFromAccumState)(
+                dpCurrentState,
+                C1,
+                C2,
+                upstream
+            );
+
+            SsimAccumState prevState = undoSsimAccumState(currentState, v1, v2, wt);
+            DifferentialPair<SsimAccumState> dpPrevState = diffPair(prevState);
 
             float dv1 = 0.0;
             float dv2 = 0.0;
             DifferentialPair<float> dpV1 = diffPair(v1, dv1);
             DifferentialPair<float> dpV2 = diffPair(v2, dv2);
-            bwd_diff(ssimFromCenterAndTargetPixel)(
+            bwd_diff(updateSsimAccumState)(
+                dpPrevState,
                 dpV1,
                 dpV2,
                 wt,
-                baseMu1,
-                baseMu2,
-                baseSumW1Sq,
-                baseSumW2Sq,
-                baseSumW12,
-                C1,
-                C2,
-                upstream
+                dpCurrentState.d
             );
 
             grad1 += dpV1.d;
