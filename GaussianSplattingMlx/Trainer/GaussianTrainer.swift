@@ -557,7 +557,6 @@ class GaussianTrainer {
         let g1d = gaussian(windowSize: windowSize, sigma: 1.5)
         let g2d = g1d.reshaped([windowSize, 1]).matmul(g1d.reshaped([1, windowSize]))
         let window = g2d.reshaped([windowSize * windowSize])
-        eval(window)
 
         // Saved forward intermediates for backward
         var savedMu1: MLXArray?
@@ -899,115 +898,7 @@ class GaussianTrainer {
         model._opacity = newOpacity
         
         resetGradientAccumulation()
-    }
-    
-    /// Split large Gaussians into two smaller ones
-    /// Each Gaussian is replaced by two Gaussians with reduced scale and slightly offset positions
-    func splitGaussians(
-        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
-        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
-        indices: MLXArray
-    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
-        
-        let selectedXYZ = xyz[indices]
-        let selectedFeaturesDC = features_dc[indices]
-        let selectedFeaturesRest = features_rest[indices]
-        let selectedScales = scales[indices]
-        let selectedRotation = rotation[indices]
-        let selectedOpacity = opacity[indices]
-        
-        // Scale down the selected Gaussians (divide by 1.6, so subtract log(1.6))
-        let newScales = selectedScales - MLX.log(MLXArray(1.6))
-        
-        // Create two new Gaussians for each split
-        // Sample positions based on the actual Gaussian scale for geometry-aware splitting
-        let numSplit = indices.shape[0]
-        let baseNoise = MLXRandom.normal([numSplit, 3])
-        let actualScales = MLX.exp(selectedScales)
-        let scaledNoise = baseNoise * MLX.mean(actualScales, axes: [1], keepDims: true) * 0.1
-        
-        let newXYZ1 = selectedXYZ + scaledNoise
-        let newXYZ2 = selectedXYZ - scaledNoise
-        
-        // Create mask to keep Gaussians that are NOT being split
-        let totalPoints = xyz.shape[0]
-        let indicesRaw = indices.asArray(Int.self)
-        var keepMask = Swift.Array(repeating: true, count: totalPoints)
-        // Set split indices to false in keep mask
-        for i in 0..<indicesRaw.count {
-            let idx = indicesRaw[i]
-            if idx < totalPoints {
-                keepMask[idx] = false
-            }
-        }
-        
-        let keepIndices = conditionToIndices(condition: MLXArray(keepMask))
-        
-        // Keep non-split Gaussians and add the two new ones for each split
-        let keptXYZ = xyz[keepIndices]
-        let keptFeaturesDC = features_dc[keepIndices]
-        let keptFeaturesRest = features_rest[keepIndices]
-        let keptScales = scales[keepIndices]
-        let keptRotation = rotation[keepIndices]
-        let keptOpacity = opacity[keepIndices]
-        
-        let newXYZAll = MLX.concatenated([keptXYZ, newXYZ1, newXYZ2], axis: 0)
-        let newFeaturesDCAll = MLX.concatenated([keptFeaturesDC, selectedFeaturesDC, selectedFeaturesDC], axis: 0)
-        let newFeaturesRestAll = MLX.concatenated([keptFeaturesRest, selectedFeaturesRest, selectedFeaturesRest], axis: 0)
-        let newScalesAll = MLX.concatenated([keptScales, newScales, newScales], axis: 0)
-        let newRotationAll = MLX.concatenated([keptRotation, selectedRotation, selectedRotation], axis: 0)
-        let newOpacityAll = MLX.concatenated([keptOpacity, selectedOpacity, selectedOpacity], axis: 0)
-        
-        return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
-    }
-    
-    /// Clone Gaussians by duplicating them with slight position offset
-    /// Used for small Gaussians in high-gradient areas
-    func cloneGaussians(
-        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
-        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
-        indices: MLXArray
-    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
-        
-        let selectedXYZ = xyz[indices]
-        let selectedFeaturesDC = features_dc[indices]
-        let selectedFeaturesRest = features_rest[indices]
-        let selectedScales = scales[indices]
-        let selectedRotation = rotation[indices]
-        let selectedOpacity = opacity[indices]
-        
-        // Add small noise to position to avoid exact duplicates
-        let noise = MLXRandom.normal(selectedXYZ.shape) * 0.01
-        let newXYZ = selectedXYZ + noise
-        
-        // Concatenate cloned Gaussians
-        let newXYZAll = MLX.concatenated([xyz, newXYZ], axis: 0)
-        let newFeaturesDCAll = MLX.concatenated([features_dc, selectedFeaturesDC], axis: 0)
-        let newFeaturesRestAll = MLX.concatenated([features_rest, selectedFeaturesRest], axis: 0)
-        let newScalesAll = MLX.concatenated([scales, selectedScales], axis: 0)
-        let newRotationAll = MLX.concatenated([rotation, selectedRotation], axis: 0)
-        let newOpacityAll = MLX.concatenated([opacity, selectedOpacity], axis: 0)
-        
-        return (newXYZAll, newFeaturesDCAll, newFeaturesRestAll, newScalesAll, newRotationAll, newOpacityAll)
-    }
-    
-    /// Remove Gaussians by keeping only those at specified indices
-    /// Used to prune low-opacity Gaussians
-    func pruneGaussians(
-        xyz: MLXArray, features_dc: MLXArray, features_rest: MLXArray,
-        scales: MLXArray, rotation: MLXArray, opacity: MLXArray,
-        indices: MLXArray
-    ) -> (MLXArray, MLXArray, MLXArray, MLXArray, MLXArray, MLXArray) {
-        
-        let newXYZ = xyz[indices]
-        let newFeaturesDC = features_dc[indices]
-        let newFeaturesRest = features_rest[indices]
-        let newScales = scales[indices]
-        let newRotation = rotation[indices]
-        let newOpacity = opacity[indices]
-        
-        return (newXYZ, newFeaturesDC, newFeaturesRest, newScales, newRotation, newOpacity)
-    }
+    }    
     func save_snapshot(iteration: Int, params: [MLXArray]) {
         // TODO: Implement snapshot saving logic if needed
         if let outputDirectoryURL {
