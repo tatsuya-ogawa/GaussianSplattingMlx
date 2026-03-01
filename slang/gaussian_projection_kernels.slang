@@ -30,69 +30,51 @@ RWStructuredBuffer<float> proj_gradPoints;   // [N*3]
 void projection_ndc_backward(uint3 tid : SV_DispatchThreadID)
 {
     uint p = tid.x;
-    if (p >= proj_counts[0]) return;
+    if (p >= proj_counts[0])
+    {
+        return;
+    }
 
     uint pBase = p * 3;
-    float px = proj_points[pBase];
-    float py = proj_points[pBase + 1];
-    float pz = proj_points[pBase + 2];
+    float3 point = float3(
+        proj_points[pBase + 0],
+        proj_points[pBase + 1],
+        proj_points[pBase + 2]
+    );
+    float3 pointDiff = float3(0.0);
+    DifferentialPair<float3> dpPoint = diffPair(point, pointDiff);
 
-    // Recompute forward values
-    float pv0 = px * proj_viewMatrix[0] + py * proj_viewMatrix[4] + pz * proj_viewMatrix[8]  + proj_viewMatrix[12];
-    float pv1 = px * proj_viewMatrix[1] + py * proj_viewMatrix[5] + pz * proj_viewMatrix[9]  + proj_viewMatrix[13];
-    float pv2 = px * proj_viewMatrix[2] + py * proj_viewMatrix[6] + pz * proj_viewMatrix[10] + proj_viewMatrix[14];
-    float pv3 = px * proj_viewMatrix[3] + py * proj_viewMatrix[7] + pz * proj_viewMatrix[11] + proj_viewMatrix[15];
-
-    float pc0 = pv0 * proj_projMatrix[0] + pv1 * proj_projMatrix[4] + pv2 * proj_projMatrix[8]  + pv3 * proj_projMatrix[12];
-    float pc1 = pv0 * proj_projMatrix[1] + pv1 * proj_projMatrix[5] + pv2 * proj_projMatrix[9]  + pv3 * proj_projMatrix[13];
-    float pc2 = pv0 * proj_projMatrix[2] + pv1 * proj_projMatrix[6] + pv2 * proj_projMatrix[10] + pv3 * proj_projMatrix[14];
-    float pc3 = pv0 * proj_projMatrix[3] + pv1 * proj_projMatrix[7] + pv2 * proj_projMatrix[11] + pv3 * proj_projMatrix[15];
-
-    float w_inv = 1.0f / (pc3 + 0.000001f);
-
-    // Read cotangents
     uint gBase = p * 4;
-    float dm0 = proj_cotMeanNdc[gBase];
-    float dm1 = proj_cotMeanNdc[gBase + 1];
-    float dm2 = proj_cotMeanNdc[gBase + 2];
-    float dm3 = proj_cotMeanNdc[gBase + 3];
+    ProjectionNdcOutputs cotOutputs;
+    cotOutputs.meanNdc = float4(
+        proj_cotMeanNdc[gBase + 0],
+        proj_cotMeanNdc[gBase + 1],
+        proj_cotMeanNdc[gBase + 2],
+        proj_cotMeanNdc[gBase + 3]
+    );
+    cotOutputs.pView = float4(
+        proj_cotPView[gBase + 0],
+        proj_cotPView[gBase + 1],
+        proj_cotPView[gBase + 2],
+        proj_cotPView[gBase + 3]
+    );
 
-    float dpv_ext0 = proj_cotPView[gBase];
-    float dpv_ext1 = proj_cotPView[gBase + 1];
-    float dpv_ext2 = proj_cotPView[gBase + 2];
-    float dpv_ext3 = proj_cotPView[gBase + 3];
+    bwd_diff(evaluateProjectionNdcOutputs)(
+        dpPoint,
+        proj_viewMatrix[0], proj_viewMatrix[1], proj_viewMatrix[2], proj_viewMatrix[3],
+        proj_viewMatrix[4], proj_viewMatrix[5], proj_viewMatrix[6], proj_viewMatrix[7],
+        proj_viewMatrix[8], proj_viewMatrix[9], proj_viewMatrix[10], proj_viewMatrix[11],
+        proj_viewMatrix[12], proj_viewMatrix[13], proj_viewMatrix[14], proj_viewMatrix[15],
+        proj_projMatrix[0], proj_projMatrix[1], proj_projMatrix[2], proj_projMatrix[3],
+        proj_projMatrix[4], proj_projMatrix[5], proj_projMatrix[6], proj_projMatrix[7],
+        proj_projMatrix[8], proj_projMatrix[9], proj_projMatrix[10], proj_projMatrix[11],
+        proj_projMatrix[12], proj_projMatrix[13], proj_projMatrix[14], proj_projMatrix[15],
+        cotOutputs
+    );
 
-    // d(p_proj) / d(p_clip): p_proj = p_clip * w_inv
-    // d(p_proj_i)/d(p_clip_i) = w_inv
-    // d(p_proj_i)/d(p_clip_3) = -p_clip_i * w_inv^2
-    float dpc0 = dm0 * w_inv;
-    float dpc1 = dm1 * w_inv;
-    float dpc2 = dm2 * w_inv;
-    float dpc3 = dm3 * w_inv;
-
-    float dw = dm0 * pc0 + dm1 * pc1 + dm2 * pc2 + dm3 * pc3;
-    dpc3 += dw * (-w_inv * w_inv);
-
-    // d(p_clip) / d(p_view): p_clip = p_view * projMatrix
-    float dpv0 = dpc0 * proj_projMatrix[0] + dpc1 * proj_projMatrix[1] + dpc2 * proj_projMatrix[2]  + dpc3 * proj_projMatrix[3];
-    float dpv1 = dpc0 * proj_projMatrix[4] + dpc1 * proj_projMatrix[5] + dpc2 * proj_projMatrix[6]  + dpc3 * proj_projMatrix[7];
-    float dpv2 = dpc0 * proj_projMatrix[8] + dpc1 * proj_projMatrix[9] + dpc2 * proj_projMatrix[10] + dpc3 * proj_projMatrix[11];
-    float dpv3 = dpc0 * proj_projMatrix[12] + dpc1 * proj_projMatrix[13] + dpc2 * proj_projMatrix[14] + dpc3 * proj_projMatrix[15];
-
-    // Add external p_view cotangent (from depths = p_view[..., 2])
-    dpv0 += dpv_ext0;
-    dpv1 += dpv_ext1;
-    dpv2 += dpv_ext2;
-    dpv3 += dpv_ext3;
-
-    // d(p_view) / d(points): p_view = [px,py,pz,1] * viewMatrix
-    float dph0 = dpv0 * proj_viewMatrix[0] + dpv1 * proj_viewMatrix[1] + dpv2 * proj_viewMatrix[2]  + dpv3 * proj_viewMatrix[3];
-    float dph1 = dpv0 * proj_viewMatrix[4] + dpv1 * proj_viewMatrix[5] + dpv2 * proj_viewMatrix[6]  + dpv3 * proj_viewMatrix[7];
-    float dph2 = dpv0 * proj_viewMatrix[8] + dpv1 * proj_viewMatrix[9] + dpv2 * proj_viewMatrix[10] + dpv3 * proj_viewMatrix[11];
-
-    proj_gradPoints[pBase]     = dph0;
-    proj_gradPoints[pBase + 1] = dph1;
-    proj_gradPoints[pBase + 2] = dph2;
+    proj_gradPoints[pBase + 0] = dpPoint.d.x;
+    proj_gradPoints[pBase + 1] = dpPoint.d.y;
+    proj_gradPoints[pBase + 2] = dpPoint.d.z;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,20 +118,18 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     float m1 = fused_means3d[meansBase + 1];
     float m2 = fused_means3d[meansBase + 2];
 
-    float pv0 = m0 * fused_viewMatrix[0] + m1 * fused_viewMatrix[4] + m2 * fused_viewMatrix[8]  + fused_viewMatrix[12];
-    float pv1 = m0 * fused_viewMatrix[1] + m1 * fused_viewMatrix[5] + m2 * fused_viewMatrix[9]  + fused_viewMatrix[13];
-    float pv2 = m0 * fused_viewMatrix[2] + m1 * fused_viewMatrix[6] + m2 * fused_viewMatrix[10] + fused_viewMatrix[14];
-    float pv3 = m0 * fused_viewMatrix[3] + m1 * fused_viewMatrix[7] + m2 * fused_viewMatrix[11] + fused_viewMatrix[15];
-
-    float pc0 = pv0 * fused_projMatrix[0] + pv1 * fused_projMatrix[4] + pv2 * fused_projMatrix[8]  + pv3 * fused_projMatrix[12];
-    float pc1 = pv0 * fused_projMatrix[1] + pv1 * fused_projMatrix[5] + pv2 * fused_projMatrix[9]  + pv3 * fused_projMatrix[13];
-    float pc2 = pv0 * fused_projMatrix[2] + pv1 * fused_projMatrix[6] + pv2 * fused_projMatrix[10] + pv3 * fused_projMatrix[14];
-    float pc3 = pv0 * fused_projMatrix[3] + pv1 * fused_projMatrix[7] + pv2 * fused_projMatrix[11] + pv3 * fused_projMatrix[15];
-
-    ProjectionValues projection = projectFromHomogeneous(
-        pv0, pv1, pv2, pv3,
-        pc0, pc1, pc2, pc3
+    ProjectionNdcOutputs projectionNdc = evaluateProjectionNdcOutputs(
+        float3(m0, m1, m2),
+        fused_viewMatrix[0], fused_viewMatrix[1], fused_viewMatrix[2], fused_viewMatrix[3],
+        fused_viewMatrix[4], fused_viewMatrix[5], fused_viewMatrix[6], fused_viewMatrix[7],
+        fused_viewMatrix[8], fused_viewMatrix[9], fused_viewMatrix[10], fused_viewMatrix[11],
+        fused_viewMatrix[12], fused_viewMatrix[13], fused_viewMatrix[14], fused_viewMatrix[15],
+        fused_projMatrix[0], fused_projMatrix[1], fused_projMatrix[2], fused_projMatrix[3],
+        fused_projMatrix[4], fused_projMatrix[5], fused_projMatrix[6], fused_projMatrix[7],
+        fused_projMatrix[8], fused_projMatrix[9], fused_projMatrix[10], fused_projMatrix[11],
+        fused_projMatrix[12], fused_projMatrix[13], fused_projMatrix[14], fused_projMatrix[15]
     );
+    float visibleMask = (projectionNdc.pView.z >= 0.2f) ? 1.0f : 0.0f;
 
     int degree = int(fused_counts[1]);
     int coeffCount = (degree + 1) * (degree + 1);
@@ -200,7 +180,7 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     float a22 = fused_viewMatrix[2 * 4 + 2];
 
     ProjectionScreenGradOutputs fusedOut = evaluateProjectionScreenGradOutputs(
-        float2(projection.ndc0, projection.ndc1),
+        float2(projectionNdc.meanNdc.x, projectionNdc.meanNdc.y),
         float3(m0, m1, m2),
         float3(fused_cameraCenter[0], fused_cameraCenter[1], fused_cameraCenter[2]),
         shCoeffs,
@@ -223,7 +203,7 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     uint means2dBase = p * 2;
     fused_outMeans2d[means2dBase + 0] = fusedOut.means2d.x;
     fused_outMeans2d[means2dBase + 1] = fusedOut.means2d.y;
-    fused_outDepths[p] = projection.pv2;
+    fused_outDepths[p] = projectionNdc.pView.z;
 
     uint colorBase = p * 3;
     fused_outColor[colorBase + 0] = fusedOut.color.x;
@@ -241,7 +221,7 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     fused_outConic[covBase + 3] = fusedOut.conic.w;
 
     float radius = computeRadiusFromCov2d(fusedOut.cov2d);
-    fused_outRadii[p] = radius * projection.visibleMask;
+    fused_outRadii[p] = radius * visibleMask;
 }
 
 // ---------------------------------------------------------------------------
