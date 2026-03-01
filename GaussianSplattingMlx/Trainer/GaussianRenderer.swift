@@ -746,14 +746,6 @@ class GaussianRenderer {
             Self.sliceFirstDim(grads[1], count: activeCount),
         ]
     }
-
-    private func buildCovariance3d(scales: MLXArray, rotations: MLXArray) -> MLXArray {
-        if let covariance3DCustomFunction {
-            return covariance3DCustomFunction([scales, rotations])[0]
-        }
-        return build_covariance_3d(s: scales, r: rotations)
-    }
-
     // MARK: - Projection + screen-space + radius fused forward
 
     private lazy var projectionScreenFusedCustomFunction: (([MLXArray]) -> [MLXArray])? = {
