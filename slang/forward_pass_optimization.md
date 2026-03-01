@@ -52,3 +52,13 @@ There are a few `.item(Int.self)` calls left inside `buildGlobalTileSliceInfo` u
 
 Because the Screen Space kernel now evaluates invisible Gaussians as well, the compute load inside that specific kernel increased by about 10–20%.
 However, the complete elimination of heavy memory gather access and CPU-side sorting, paired crucially with the **enabling of Forward Pass compilation**, has resulted in a dramatic overall improvement to training performance.
+
+## Current Projection+Screen Fused Rule
+
+To keep forward/backward behavior aligned and maintainable, the `projection+screen` fused path now follows this rule:
+
+1. Define the core math once as a large shared `[Differentiable]` function.
+2. Reuse that function from the fused forward kernel.
+3. Reuse the same function from fused backward via `bwd_diff(...)` in a thin wrapper kernel.
+
+This removes duplicated SH/covariance/conic logic between forward and backward and keeps fused math as a single source of truth in shared Slang code.

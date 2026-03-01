@@ -478,66 +478,6 @@ class GaussianRenderer {
         )
     }
 
-    private static func _projectionNdcVJP(
-        primals: [MLXArray], cotangents: [MLXArray],
-        backwardKernel: MLXFast.MLXFastKernel
-    ) -> [MLXArray] {
-        let points = primals[0]
-        let viewMatrix = primals[1]
-        let projMatrix = primals[2]
-        let cotMeanNdc = cotangents[0]
-        let cotPView = cotangents[1]
-        // cotangents[2] = visibleMask cotangent (no gradient, ignored)
-
-        let activeCount = points.shape[0]
-        let paddedCount = Swift.max(activeCount, 1)
-        let pointsPadded = Self.padFirstDimToAtLeast(points, count: paddedCount)
-        let cotMeanNdcPadded = Self.padFirstDimToAtLeast(cotMeanNdc, count: paddedCount)
-        let cotPViewPadded = Self.padFirstDimToAtLeast(cotPView, count: paddedCount)
-        let counts = MLXArray([UInt32(paddedCount)])
-
-        let grads = backwardKernel(
-            [pointsPadded, viewMatrix, projMatrix, counts, cotMeanNdcPadded, cotPViewPadded],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [pointsPadded.shape],
-            outputDTypes: [points.dtype]
-        )
-
-        return [
-            Self.sliceFirstDim(grads[0], count: activeCount),  // grad_points
-            MLXArray.zeros(like: viewMatrix),                   // no grad for viewMatrix
-            MLXArray.zeros(like: projMatrix),                   // no grad for projMatrix
-        ]
-    }
-    private static func _cov3dVJP(
-        primals: [MLXArray], cotangents: [MLXArray],
-        backwardKernel: MLXFast.MLXFastKernel
-    ) -> [MLXArray] {
-        let scales = primals[0]
-        let rotations = primals[1]
-        let cotCov3d = cotangents[0]
-
-        let activeCount = scales.shape[0]
-        let paddedCount = Swift.max(activeCount, 1)
-        let scalesPadded = Self.padFirstDimToAtLeast(scales, count: paddedCount)
-        let rotationsPadded = Self.padFirstDimToAtLeast(rotations, count: paddedCount)
-        let cotCov3dPadded = Self.padFirstDimToAtLeast(cotCov3d, count: paddedCount)
-        let pointCounts = MLXArray([UInt32(paddedCount)])
-
-        let grads = backwardKernel(
-            [scalesPadded, rotationsPadded, cotCov3dPadded, pointCounts],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [scalesPadded.shape, rotationsPadded.shape],
-            outputDTypes: [scales.dtype, rotations.dtype]
-        )
-
-        return [
-            Self.sliceFirstDim(grads[0], count: activeCount),
-            Self.sliceFirstDim(grads[1], count: activeCount),
-        ]
-    }
     // MARK: - Projection + screen-space + radius fused forward
 
     private lazy var projectionScreenFusedCustomFunction: (([MLXArray]) -> [MLXArray])? = {
@@ -548,11 +488,7 @@ class GaussianRenderer {
             let fusedForwardKernel = try? SlangKernelSpecLoader.loadKernel(
                 named: "gaussian_projection_screen_fused_forward_mlx"),
             let fusedBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_projection_screen_fused_backward_mlx"),
-            let projectionBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "projection_ndc_backward_mlx"),
-            let cov3dBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_cov3d_backward_mlx")
+                named: "gaussian_projection_screen_fused_backward_mlx")
         else {
             Logger.shared.debug(
                 "projection+screen fused kernel unavailable. fallback path is used.")
@@ -635,8 +571,6 @@ class GaussianRenderer {
                             primals: primals,
                             cotangents: cotangents,
                             fusedBackwardKernel: fusedBackwardKernel,
-                            projectionBackwardKernel: projectionBackwardKernel,
-                            cov3dBackwardKernel: cov3dBackwardKernel,
                             activeShDegree: activeShDegree
                         )
                         eval(result)
@@ -647,8 +581,6 @@ class GaussianRenderer {
                     primals: primals,
                     cotangents: cotangents,
                     fusedBackwardKernel: fusedBackwardKernel,
-                    projectionBackwardKernel: projectionBackwardKernel,
-                    cov3dBackwardKernel: cov3dBackwardKernel,
                     activeShDegree: activeShDegree
                 )
             }
@@ -658,8 +590,6 @@ class GaussianRenderer {
     private static func _projectionScreenFusedVJP(
         primals: [MLXArray], cotangents: [MLXArray],
         fusedBackwardKernel: MLXFast.MLXFastKernel,
-        projectionBackwardKernel: MLXFast.MLXFastKernel,
-        cov3dBackwardKernel: MLXFast.MLXFastKernel,
         activeShDegree: Int
     ) -> [MLXArray] {
         let scales = primals[0]
@@ -693,6 +623,7 @@ class GaussianRenderer {
         let cotCov2dPadded = padFirstDimToAtLeast(cotCov2d, count: paddedCount)
         let cotColorPadded = padFirstDimToAtLeast(cotColor, count: paddedCount)
         let cotConicPadded = padFirstDimToAtLeast(cotConic, count: paddedCount)
+        let cotDepthsPadded = padFirstDimToAtLeast(cotDepths, count: paddedCount)
 
         let fovXKernel = fovX.reshaped([1])
         let fovYKernel = fovY.reshaped([1])
@@ -707,166 +638,43 @@ class GaussianRenderer {
         let fusedBackward = fusedBackwardKernel(
             [
                 scalesPadded, rotationsPadded, means3dPadded, shsPadded,
-                cameraCenter, viewMatrix,
+                cameraCenter, viewMatrix, projMatrix,
                 fovXKernel, fovYKernel, focalXKernel, focalYKernel,
                 imageWidthKernel, imageHeightKernel,
+                cotDepthsPadded,
                 cotMeans2dPadded, cotCov2dPadded, cotColorPadded, cotConicPadded,
                 fusedCounts,
             ],
             grid: (max(paddedCount, 1), 1, 1),
             threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
             outputShapes: [
-                [paddedCount, 4], means3dPadded.shape, shsPadded.shape,
-                [paddedCount, 3, 3], means3dPadded.shape,
+                scalesPadded.shape, rotationsPadded.shape, means3dPadded.shape,
+                shsPadded.shape, means3dPadded.shape,
             ],
             outputDTypes: [
-                means3d.dtype, means3d.dtype, shs.dtype,
-                scales.dtype, means3d.dtype,
+                scales.dtype, rotations.dtype, means3d.dtype,
+                shs.dtype, means3d.dtype,
             ],
             initValue: 0.0
         )
 
-        let gradMeanNdc = sliceFirstDim(fusedBackward[0], count: activeCount)
-        let gradMeans3dScreen = sliceFirstDim(fusedBackward[1], count: activeCount)
-        let gradShs = sliceFirstDim(fusedBackward[2], count: activeCount)
-        let gradCov3d = sliceFirstDim(fusedBackward[3], count: activeCount)
+        let gradScales = sliceFirstDim(fusedBackward[0], count: activeCount)
+        let gradRotations = sliceFirstDim(fusedBackward[1], count: activeCount)
+        let gradMeans3d = sliceFirstDim(fusedBackward[2], count: activeCount)
+        let gradShs = sliceFirstDim(fusedBackward[3], count: activeCount)
         let gradCameraCenterPoint = sliceFirstDim(fusedBackward[4], count: activeCount)
-
-        let cotPView = MLXArray.zeros([activeCount, 4], dtype: means3d.dtype)
-        cotPView[.ellipsis, 2] = cotDepths
-        let projectionGrads = _projectionNdcVJP(
-            primals: [means3d, viewMatrix, projMatrix],
-            cotangents: [gradMeanNdc, cotPView],
-            backwardKernel: projectionBackwardKernel
-        )
-
-        let cov3dGrads = _cov3dVJP(
-            primals: [scales, rotations],
-            cotangents: [gradCov3d],
-            backwardKernel: cov3dBackwardKernel
-        )
 
         let gradCameraCenter =
             gradCameraCenterPoint.sum(axis: 0).expandedDimensions(axes: [0])
 
         return [
-            cov3dGrads[0],  // gradScales
-            cov3dGrads[1],  // gradRotations
-            projectionGrads[0] + gradMeans3dScreen,  // gradMeans3d
+            gradScales,  // gradScales
+            gradRotations,  // gradRotations
+            gradMeans3d,  // gradMeans3d
             gradShs,  // gradShs
             gradCameraCenter,  // gradCameraCenter
             MLXArray.zeros(viewMatrix.shape, dtype: viewMatrix.dtype),
             MLXArray.zeros(projMatrix.shape, dtype: projMatrix.dtype),
-            MLXArray.zeros(fovX.shape, dtype: fovX.dtype),
-            MLXArray.zeros(fovY.shape, dtype: fovY.dtype),
-            MLXArray.zeros(focalX.shape, dtype: focalX.dtype),
-            MLXArray.zeros(focalY.shape, dtype: focalY.dtype),
-            MLXArray.zeros(imageWidth.shape, dtype: imageWidth.dtype),
-            MLXArray.zeros(imageHeight.shape, dtype: imageHeight.dtype),
-        ]
-    }
-    private static func _screenSpaceVJP(
-        primals: [MLXArray], cotangents: [MLXArray],
-        colorBackwardKernel: MLXFast.MLXFastKernel,
-        covForwardKernel: MLXFast.MLXFastKernel,
-        covBackwardKernel: MLXFast.MLXFastKernel,
-        inverseBackwardKernel: MLXFast.MLXFastKernel,
-        activeShDegree: Int
-    ) -> [MLXArray] {
-        let meanNdc = primals[0]
-        let means3d = primals[1]
-        let shs = primals[2]
-        let cov3d = primals[3]
-        let cameraCenter = primals[4]
-        let viewMatrix = primals[5]
-        let fovX = primals[6]
-        let fovY = primals[7]
-        let focalX = primals[8]
-        let focalY = primals[9]
-        let imageWidth = primals[10]
-        let imageHeight = primals[11]
-        let fovXKernel = fovX.reshaped([1])
-        let fovYKernel = fovY.reshaped([1])
-        let focalXKernel = focalX.reshaped([1])
-        let focalYKernel = focalY.reshaped([1])
-
-        let cotMeans2d = cotangents[0]
-        let cotCov2d = cotangents[1]
-        let cotColor = cotangents[2]
-        let cotConic = cotangents[3]
-
-        let activeCount = meanNdc.shape[0]
-        let paddedCount = Swift.max(activeCount, screenSpaceCustomMinPointCount)
-        let meanNdcPadded = padFirstDimToAtLeast(meanNdc, count: paddedCount)
-        let means3dPadded = padFirstDimToAtLeast(means3d, count: paddedCount)
-        let shsPadded = padFirstDimToAtLeast(shs, count: paddedCount)
-        let cov3dPadded = padFirstDimToAtLeast(cov3d, count: paddedCount)
-        let cotMeans2dPadded = padFirstDimToAtLeast(cotMeans2d, count: paddedCount)
-        let cotCov2dPadded = padFirstDimToAtLeast(cotCov2d, count: paddedCount)
-        let cotColorPadded = padFirstDimToAtLeast(cotColor, count: paddedCount)
-        let cotConicPadded = padFirstDimToAtLeast(cotConic, count: paddedCount)
-
-        let colorCounts = MLXArray(
-            [UInt32(paddedCount), UInt32(activeShDegree), UInt32(shsPadded.shape[1])]
-        )
-        let pointCounts = MLXArray([UInt32(paddedCount)])
-
-        let colorGrads = colorBackwardKernel(
-            [means3dPadded, shsPadded, cameraCenter, cotColorPadded, colorCounts],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [means3dPadded.shape, shsPadded.shape],
-            outputDTypes: [means3d.dtype, shs.dtype],
-            initValue: 0.0
-        )
-
-        let cov2dPadded = covForwardKernel(
-            [
-                means3dPadded, cov3dPadded, viewMatrix, fovXKernel, fovYKernel, focalXKernel,
-                focalYKernel, pointCounts,
-            ],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [[paddedCount, 2, 2]],
-            outputDTypes: [cov3d.dtype]
-        )[0]
-
-        let gradCov2dFromConic = inverseBackwardKernel(
-            [cov2dPadded, cotConicPadded, pointCounts],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [cov2dPadded.shape],
-            outputDTypes: [cov2dPadded.dtype]
-        )[0]
-        let totalCotCov2d = cotCov2dPadded + gradCov2dFromConic
-
-        let covGrads = covBackwardKernel(
-            [
-                means3dPadded, cov3dPadded, viewMatrix, fovXKernel, fovYKernel, focalXKernel,
-                focalYKernel, totalCotCov2d, pointCounts,
-            ],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [means3dPadded.shape, cov3dPadded.shape],
-            outputDTypes: [means3d.dtype, cov3d.dtype]
-        )
-
-        let gradMeanNdcPadded = MLXArray.zeros(meanNdcPadded.shape, dtype: meanNdc.dtype)
-        gradMeanNdcPadded[.ellipsis, 0] = cotMeans2dPadded[.ellipsis, 0] * imageWidth * 0.5
-        gradMeanNdcPadded[.ellipsis, 1] = cotMeans2dPadded[.ellipsis, 1] * imageHeight * 0.5
-
-        let gradMeans3dPadded = colorGrads[0] + covGrads[0]
-        let gradShsPadded = colorGrads[1]
-        let gradCov3dPadded = covGrads[1]
-        let gradCameraCenter = -(colorGrads[0].sum(axis: 0)).expandedDimensions(axes: [0])
-
-        return [
-            sliceFirstDim(gradMeanNdcPadded, count: activeCount),
-            sliceFirstDim(gradMeans3dPadded, count: activeCount),
-            sliceFirstDim(gradShsPadded, count: activeCount),
-            sliceFirstDim(gradCov3dPadded, count: activeCount),
-            gradCameraCenter,
-            MLXArray.zeros(viewMatrix.shape, dtype: viewMatrix.dtype),
             MLXArray.zeros(fovX.shape, dtype: fovX.dtype),
             MLXArray.zeros(fovY.shape, dtype: fovY.dtype),
             MLXArray.zeros(focalX.shape, dtype: focalX.dtype),

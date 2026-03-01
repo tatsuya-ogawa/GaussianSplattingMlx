@@ -11,6 +11,12 @@ struct ProjectionValues
     float visibleMask;
 };
 
+struct ProjectionNdcOutputs : IDifferentiable
+{
+    float4 meanNdc;
+    float4 pView;
+};
+
 struct Cov3dValues : IDifferentiable
 {
     float c00;
@@ -96,6 +102,62 @@ ProjectionValues projectFromHomogeneous(
 }
 
 [Differentiable]
+ProjectionNdcOutputs evaluateProjectionNdcOutputs(
+    float3 point,
+    no_diff float view00,
+    no_diff float view01,
+    no_diff float view02,
+    no_diff float view03,
+    no_diff float view10,
+    no_diff float view11,
+    no_diff float view12,
+    no_diff float view13,
+    no_diff float view20,
+    no_diff float view21,
+    no_diff float view22,
+    no_diff float view23,
+    no_diff float view30,
+    no_diff float view31,
+    no_diff float view32,
+    no_diff float view33,
+    no_diff float proj00,
+    no_diff float proj01,
+    no_diff float proj02,
+    no_diff float proj03,
+    no_diff float proj10,
+    no_diff float proj11,
+    no_diff float proj12,
+    no_diff float proj13,
+    no_diff float proj20,
+    no_diff float proj21,
+    no_diff float proj22,
+    no_diff float proj23,
+    no_diff float proj30,
+    no_diff float proj31,
+    no_diff float proj32,
+    no_diff float proj33
+)
+{
+    ProjectionNdcOutputs outVals;
+
+    float pv0 = point.x * view00 + point.y * view10 + point.z * view20 + view30;
+    float pv1 = point.x * view01 + point.y * view11 + point.z * view21 + view31;
+    float pv2 = point.x * view02 + point.y * view12 + point.z * view22 + view32;
+    float pv3 = point.x * view03 + point.y * view13 + point.z * view23 + view33;
+
+    float pc0 = pv0 * proj00 + pv1 * proj10 + pv2 * proj20 + pv3 * proj30;
+    float pc1 = pv0 * proj01 + pv1 * proj11 + pv2 * proj21 + pv3 * proj31;
+    float pc2 = pv0 * proj02 + pv1 * proj12 + pv2 * proj22 + pv3 * proj32;
+    float pc3 = pv0 * proj03 + pv1 * proj13 + pv2 * proj23 + pv3 * proj33;
+
+    float wInv = 1.0f / (pc3 + 0.000001f);
+    outVals.meanNdc = float4(pc0, pc1, pc2, pc3) * wInv;
+    outVals.pView = float4(pv0, pv1, pv2, pv3);
+
+    return outVals;
+}
+
+[Differentiable]
 float2 ndcToScreen(float ndcX, float ndcY, no_diff float imageWidth, no_diff float imageHeight)
 {
     float sx = ((ndcX + 1.0f) * imageWidth - 1.0f) * 0.5f;
@@ -103,6 +165,7 @@ float2 ndcToScreen(float ndcX, float ndcY, no_diff float imageWidth, no_diff flo
     return float2(sx, sy);
 }
 
+[Differentiable]
 Cov3dValues buildCov3dFromScaleRotation(
     float sx,
     float sy,

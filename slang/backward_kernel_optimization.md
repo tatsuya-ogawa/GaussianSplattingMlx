@@ -58,3 +58,31 @@ Advanced GPU control functions executed via the Slang compiler (such as Shared M
 The Shared Memory mechanism (Approach A), which yielded immense results in the Backward kernel, was also actively tested on the Forward kernel. In practical tests, the **performance impact was non-existent (sometimes regressing slightly)**.
 The reason is that Forward processing efficiency is bound tightly by math operations (primarily `exp()`) rather than memory bandwidth, and the hardware L2 Cache natively within Apple Silicon inherently caches shared Gaussian data among tile threadgroups flawlessly without software-level explicit threadgroup boundaries.
 Since the Forward pass also never encounters atomic contention (which the Backward pass had to solve), the Forward kernel remains on a 1D Pixel-dispatch model processing bare global memory accesses. This setup is effectively evaluated as the ceiling speed limit for its architectural design.
+
+## Current Policy: AD-Centric Fused Projection+Screen Backward
+
+For the `projection+screen` fused path, the codebase now follows an **AD-centric policy**:
+
+1. Move mathematical logic into large `[Differentiable]` functions under shared Slang modules.
+2. Keep kernel entrypoints thin (buffer I/O + packing/unpacking + a small number of AD calls).
+3. Prefer a **single `bwd_diff(...)` call** for the fused math block when practical.
+
+### Why an explicit backward kernel still exists
+
+Even with AD, this repository's toolchain is `slangc -> metal -> MLX JSON`, and runtime dispatch expects named Metal entrypoints.
+In this path, `-entry fwd.bwd` is not available as a direct dispatch target, so a dedicated backward entrypoint is still required.
+
+### Concrete implementation in this repo
+
+- Shared fused differentiable function:
+  - `evaluateProjectionScreenGradOutputs(...)` in `slang/gaussian_projection_screen_shared.slang`
+- Forward kernel:
+  - `gaussian_projection_screen_fused_forward` calls the same fused function for `means2d/color/cov2d/conic`.
+- Backward kernel:
+  - `gaussian_projection_screen_fused_backward` acts as a thin wrapper and calls `bwd_diff(evaluateProjectionScreenGradOutputs)(...)`.
+
+### Guideline for future fused kernels
+
+- Do not hand-write long symbolic gradient algebra inside kernels unless required by control-flow constraints.
+- Keep differentiable math in reusable shared functions first, then build minimal forward/backward kernel wrappers around them.
+- Treat wrapper code as ABI glue for MLX, not as the place for core math logic.

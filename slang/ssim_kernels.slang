@@ -23,6 +23,37 @@ RWStructuredBuffer<float> ssf_outSigma1;  // [H*W*C]
 RWStructuredBuffer<float> ssf_outSigma2;  // [H*W*C]
 RWStructuredBuffer<float> ssf_outSigma12; // [H*W*C]
 
+[Differentiable]
+float ssimFromCenterAndTargetPixel(
+    float v1,
+    float v2,
+    no_diff float wt,
+    no_diff float baseMu1,
+    no_diff float baseMu2,
+    no_diff float baseSumW1Sq,
+    no_diff float baseSumW2Sq,
+    no_diff float baseSumW12,
+    no_diff float C1,
+    no_diff float C2
+)
+{
+    float mu1 = baseMu1 + wt * v1;
+    float mu2 = baseMu2 + wt * v2;
+    float sumW1Sq = baseSumW1Sq + wt * v1 * v1;
+    float sumW2Sq = baseSumW2Sq + wt * v2 * v2;
+    float sumW12 = baseSumW12 + wt * v1 * v2;
+
+    float sigma1Sq = sumW1Sq - mu1 * mu1;
+    float sigma2Sq = sumW2Sq - mu2 * mu2;
+    float sigma12 = sumW12 - mu1 * mu2;
+
+    float a = 2.0 * mu1 * mu2 + C1;
+    float b = 2.0 * sigma12 + C2;
+    float c_ = mu1 * mu1 + mu2 * mu2 + C1;
+    float d = sigma1Sq + sigma2Sq + C2;
+    return (a * b) / (c_ * d);
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void ssim_forward(uint3 tid : SV_DispatchThreadID)
@@ -99,17 +130,9 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
 // ssim_backward
 // ---------------------------------------------------------------------------
 // For each output pixel (h, w, c), iterate over all 11×11 windows
-// that contain this pixel. At each window center, use the saved stats
-// to compute SSIM partial derivatives, then accumulate the gradient
-// contribution weighted by the Gaussian kernel.
+// that contain this pixel. At each window center, use saved stats and
+// recover per-pixel gradient through bwd_diff(ssimFromCenterAndTargetPixel).
 //
-// grad_img1(px,py,c) = sum over (di,dj) in [-pad,pad]:
-//   let (cx,cy) = (px+di, py+dj)   // window center
-//   w(di+pad, dj+pad) * upstream(cx,cy,c) * [
-//     dS/dmu1 * 1
-//     + dS/dsigma1_sq * 2*(img1(px,py,c) - mu1(cx,cy,c))
-//     + dS/dsigma12   * (img2(px,py,c) - mu2(cx,cy,c))
-//   ]
 // (Similarly for grad_img2)
 
 StructuredBuffer<float> ssb_gradOutput; // [H*W*C]
@@ -174,42 +197,36 @@ void ssim_backward(uint3 tid : SV_DispatchThreadID)
             float s2 = ssb_sigma2[cIdx];
             float s12 = ssb_sigma12[cIdx];
 
-            // SSIM formula terms at window center (cx, cy)
-            float a = 2.0 * m1 * m2 + C1;
-            float b = 2.0 * s12 + C2;
-            float c_ = m1 * m1 + m2 * m2 + C1;
-            float d = s1 + s2 + C2;
-            float den = c_ * d;
-            float den2 = den * den;
-            float num = a * b;
+            // Recover fixed "all other pixels" contributions for this center.
+            float sumW1Sq = s1 + m1 * m1;
+            float sumW2Sq = s2 + m2 * m2;
+            float sumW12 = s12 + m1 * m2;
+            float baseMu1 = m1 - wt * v1;
+            float baseMu2 = m2 - wt * v2;
+            float baseSumW1Sq = sumW1Sq - wt * v1 * v1;
+            float baseSumW2Sq = sumW2Sq - wt * v2 * v2;
+            float baseSumW12 = sumW12 - wt * v1 * v2;
 
-            // Partial derivatives of ssim w.r.t. statistics
-            // d(ssim)/d(mu1) = (d(num)/d(mu1)*den - num*d(den)/d(mu1)) / den^2
-            float dS_dmu1 = (2.0 * m2 * b * den - num * 2.0 * m1 * d) / den2;
-            float dS_dmu2 = (2.0 * m1 * b * den - num * 2.0 * m2 * d) / den2;
-            float dS_ds1 = -num * c_ / den2;  // d(den)/d(sigma1_sq) = c_
-            float dS_ds2 = -num * c_ / den2;  // d(den)/d(sigma2_sq) = c_
-            float dS_ds12 = 2.0 * a / den;    // d(num)/d(sigma12) = 2*a
+            float dv1 = 0.0;
+            float dv2 = 0.0;
+            DifferentialPair<float> dpV1 = diffPair(v1, dv1);
+            DifferentialPair<float> dpV2 = diffPair(v2, dv2);
+            bwd_diff(ssimFromCenterAndTargetPixel)(
+                dpV1,
+                dpV2,
+                wt,
+                baseMu1,
+                baseMu2,
+                baseSumW1Sq,
+                baseSumW2Sq,
+                baseSumW12,
+                C1,
+                C2,
+                upstream
+            );
 
-            // Derivatives of statistics w.r.t. img1 at pixel (h_pos, w_pos)
-            // mu1 = sum w*v1 → d/dv1 = w
-            // sigma1_sq = sum w*v1^2 - mu1^2 → d/dv1 = 2*w*(v1 - mu1)
-            // sigma12 = sum w*v1*v2 - mu1*mu2 → d/dv1 = w*(v2 - mu2)
-            float dmu1_dv1 = wt;
-            float ds1_dv1 = 2.0 * wt * (v1 - m1);
-            float ds12_dv1 = wt * (v2 - m2);
-
-            grad1 += upstream * (dS_dmu1 * dmu1_dv1 + dS_ds1 * ds1_dv1 + dS_ds12 * ds12_dv1);
-
-            // Derivatives w.r.t. img2
-            // mu2 = sum w*v2 → d/dv2 = w
-            // sigma2_sq = sum w*v2^2 - mu2^2 → d/dv2 = 2*w*(v2 - mu2)
-            // sigma12 = sum w*v1*v2 - mu1*mu2 → d/dv2 = w*(v1 - mu1)
-            float dmu2_dv2 = wt;
-            float ds2_dv2 = 2.0 * wt * (v2 - m2);
-            float ds12_dv2 = wt * (v1 - m1);
-
-            grad2 += upstream * (dS_dmu2 * dmu2_dv2 + dS_ds2 * ds2_dv2 + dS_ds12 * ds12_dv2);
+            grad1 += dpV1.d;
+            grad2 += dpV2.d;
         }
     }
 
