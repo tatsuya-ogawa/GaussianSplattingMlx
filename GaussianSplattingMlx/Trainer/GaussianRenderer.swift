@@ -743,7 +743,7 @@ class GaussianRenderer {
         radii: MLXArray,
         conic: MLXArray,
         inputIsDepthSorted: Bool = false,
-        rect: (MLXArray, MLXArray)? = nil
+        rect: (MLXArray, MLXArray)
     ) -> (
         render: MLXArray,
         depth: MLXArray,
@@ -777,7 +777,7 @@ class GaussianRenderer {
         radii: MLXArray,
         conic: MLXArray,
         inputIsDepthSorted: Bool = false,
-        rect: (MLXArray, MLXArray)? = nil
+        rect: (MLXArray, MLXArray)
     ) -> (
         render: MLXArray,
         depth: MLXArray,
@@ -792,12 +792,6 @@ class GaussianRenderer {
         )
         let rectValue =
             rect
-            ?? get_rect(
-                pix_coord: means2d,
-                radii: radii,
-                width: imageWidth,
-                height: imageHeight
-            )
         let conicValues = conic
         let packedGaussians = buildPackedGaussians(
             means2d: means2d,
