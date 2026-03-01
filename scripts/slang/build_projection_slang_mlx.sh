@@ -14,6 +14,10 @@ fi
 
 SLANG_SRC="$ROOT_DIR/slang/gaussian_projection_kernels.slang"
 CONVERTER="$ROOT_DIR/scripts/slang/convert_slang_metal_to_mlx.py"
+DOCKERFILE_PATH="$ROOT_DIR/scripts/slang/Dockerfile"
+if [[ ! -f "$DOCKERFILE_PATH" && -f "$ROOT_DIR/slang/Dockerfile" ]]; then
+  DOCKERFILE_PATH="$ROOT_DIR/slang/Dockerfile"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -36,6 +40,13 @@ elif docker image inspect slang-slang >/dev/null 2>&1; then
   SLANG_SRC_ARG="/work/slang/gaussian_projection_kernels.slang"
   OUT_DIR_ARG="/work/$OUT_DIR_REL"
   SLANG_INCLUDE_ARG="/work/slang"
+elif [[ -f "$DOCKERFILE_PATH" ]] && command -v docker >/dev/null 2>&1; then
+  echo "[slang-projection] building docker image slang-slang from $DOCKERFILE_PATH"
+  docker build -t slang-slang -f "$DOCKERFILE_PATH" "$ROOT_DIR" >/dev/null
+  SLANGC_CMD=(docker run --rm -v "$ROOT_DIR:/work" -w /work slang-slang slangc)
+  SLANG_SRC_ARG="/work/slang/gaussian_projection_kernels.slang"
+  OUT_DIR_ARG="/work/$OUT_DIR_REL"
+  SLANG_INCLUDE_ARG="/work/slang"
 else
   echo "slangc not found and docker image 'slang-slang' is unavailable." >&2
   echo "Install slangc or build the docker image first." >&2
@@ -43,9 +54,7 @@ else
 fi
 
 entries=(
-  projection_ndc_forward
   projection_ndc_backward
-  get_radius_mask_forward
   gaussian_projection_screen_fused_forward
   gaussian_projection_screen_fused_backward
 )
@@ -58,17 +67,9 @@ for entry in "${entries[@]}"; do
   input_names=""
   output_names=""
   case "$entry" in
-    projection_ndc_forward)
-      input_names="proj_points_1,proj_viewMatrix_1,proj_projMatrix_1,proj_counts_1"
-      output_names="proj_outMeanNdc_1,proj_outPView_1,proj_outVisibleMask_1"
-      ;;
     projection_ndc_backward)
       input_names="proj_points_1,proj_viewMatrix_1,proj_projMatrix_1,proj_counts_1,proj_cotMeanNdc_1,proj_cotPView_1"
       output_names="proj_gradPoints_1"
-      ;;
-    get_radius_mask_forward)
-      input_names="rad_cov2d_1,rad_visibleMask_1,rad_counts_1"
-      output_names="rad_outRadii_1"
       ;;
     gaussian_projection_screen_fused_forward)
       input_names="fused_scales_1,fused_rotations_1,fused_means3d_1,fused_shs_1,fused_cameraCenter_1,fused_viewMatrix_1,fused_projMatrix_1,fused_fovX_1,fused_fovY_1,fused_focalX_1,fused_focalY_1,fused_imageWidth_1,fused_imageHeight_1,fused_counts_1"
@@ -95,7 +96,9 @@ for entry in "${entries[@]}"; do
 done
 
 mkdir -p "$BUNDLE_DIR"
-cp "$OUT_DIR"/*_mlx.json "$BUNDLE_DIR/"
+for entry in "${entries[@]}"; do
+  cp "$OUT_DIR/${entry}_mlx.json" "$BUNDLE_DIR/"
+done
 
 echo "[slang-projection] done"
 echo "[slang-projection] generated JSON copied to: $BUNDLE_DIR"
