@@ -126,6 +126,185 @@ void generate_keys(uint3 tid : SV_DispatchThreadID)
 }
 
 // ---------------------------------------------------------------------------
+// radix_sort_tile_keys_fused_forward
+// ---------------------------------------------------------------------------
+StructuredBuffer<uint> rs_keysHighIn;   // [M]
+StructuredBuffer<uint> rs_keysLowIn;    // [M]
+StructuredBuffer<uint> rs_valuesIn;     // [M]
+StructuredBuffer<uint> rs_counts;       // [0]=M, [1]=tileBitCount
+
+RWStructuredBuffer<uint> rs_sortedKeysHigh;   // [M]
+RWStructuredBuffer<uint> rs_sortedKeysLow;    // [M]
+RWStructuredBuffer<uint> rs_sortedValues;     // [M]
+RWStructuredBuffer<uint> rs_scratchKeysHigh;  // [M]
+RWStructuredBuffer<uint> rs_scratchKeysLow;   // [M]
+RWStructuredBuffer<uint> rs_scratchValues;    // [M]
+
+static const uint RS_THREADS = 128;
+static const uint RS_RADIX_BITS = 4;
+static const uint RS_RADIX = 16;
+static const uint RS_LOW_PASSES = 8; // 32 bits / 4 bits
+
+groupshared uint rs_localHist[RS_THREADS * RS_RADIX];
+groupshared uint rs_threadBase[RS_THREADS * RS_RADIX];
+
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void radix_sort_tile_keys_fused_forward(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    uint lane = gtid.x;
+    uint M = rs_counts[0];
+    if (lane >= RS_THREADS || M == 0)
+    {
+        return;
+    }
+
+    uint chunk = (M + RS_THREADS - 1) / RS_THREADS;
+    uint start = lane * chunk;
+    uint end = min(start + chunk, M);
+
+    uint highBits = rs_counts[1];
+    uint highPasses = (highBits + RS_RADIX_BITS - 1) / RS_RADIX_BITS;
+    if (highPasses < 1)
+    {
+        highPasses = 1;
+    }
+    uint totalPasses = RS_LOW_PASSES + highPasses;
+
+    bool writeToScratch = true;
+    for (uint pass = 0; pass < totalPasses; ++pass)
+    {
+        uint localBase = lane * RS_RADIX;
+        for (uint d = 0; d < RS_RADIX; ++d)
+        {
+            rs_localHist[localBase + d] = 0;
+        }
+        AllMemoryBarrierWithGroupSync();
+
+        for (uint i = start; i < end; ++i)
+        {
+            uint keyHigh;
+            uint keyLow;
+            if (pass == 0)
+            {
+                keyHigh = rs_keysHighIn[i];
+                keyLow = rs_keysLowIn[i];
+            }
+            else if (writeToScratch)
+            {
+                keyHigh = rs_sortedKeysHigh[i];
+                keyLow = rs_sortedKeysLow[i];
+            }
+            else
+            {
+                keyHigh = rs_scratchKeysHigh[i];
+                keyLow = rs_scratchKeysLow[i];
+            }
+
+            uint digit;
+            if (pass < RS_LOW_PASSES)
+            {
+                digit = (keyLow >> (pass * RS_RADIX_BITS)) & (RS_RADIX - 1);
+            }
+            else
+            {
+                uint hiPass = pass - RS_LOW_PASSES;
+                digit = (keyHigh >> (hiPass * RS_RADIX_BITS)) & (RS_RADIX - 1);
+            }
+            rs_localHist[localBase + digit] += 1;
+        }
+        AllMemoryBarrierWithGroupSync();
+
+        if (lane == 0)
+        {
+            uint running = 0;
+            for (uint d = 0; d < RS_RADIX; ++d)
+            {
+                uint offset = running;
+                for (uint t = 0; t < RS_THREADS; ++t)
+                {
+                    uint idx = t * RS_RADIX + d;
+                    rs_threadBase[idx] = offset;
+                    offset += rs_localHist[idx];
+                }
+                running = offset;
+            }
+        }
+        AllMemoryBarrierWithGroupSync();
+
+        uint localOffsets[RS_RADIX];
+        for (uint d = 0; d < RS_RADIX; ++d)
+        {
+            localOffsets[d] = 0;
+        }
+
+        for (uint i = start; i < end; ++i)
+        {
+            uint keyHigh;
+            uint keyLow;
+            uint value;
+            if (pass == 0)
+            {
+                keyHigh = rs_keysHighIn[i];
+                keyLow = rs_keysLowIn[i];
+                value = rs_valuesIn[i];
+            }
+            else if (writeToScratch)
+            {
+                keyHigh = rs_sortedKeysHigh[i];
+                keyLow = rs_sortedKeysLow[i];
+                value = rs_sortedValues[i];
+            }
+            else
+            {
+                keyHigh = rs_scratchKeysHigh[i];
+                keyLow = rs_scratchKeysLow[i];
+                value = rs_scratchValues[i];
+            }
+
+            uint digit;
+            if (pass < RS_LOW_PASSES)
+            {
+                digit = (keyLow >> (pass * RS_RADIX_BITS)) & (RS_RADIX - 1);
+            }
+            else
+            {
+                uint hiPass = pass - RS_LOW_PASSES;
+                digit = (keyHigh >> (hiPass * RS_RADIX_BITS)) & (RS_RADIX - 1);
+            }
+
+            uint dst = rs_threadBase[localBase + digit] + localOffsets[digit];
+            localOffsets[digit] += 1;
+            if (writeToScratch)
+            {
+                rs_scratchKeysHigh[dst] = keyHigh;
+                rs_scratchKeysLow[dst] = keyLow;
+                rs_scratchValues[dst] = value;
+            }
+            else
+            {
+                rs_sortedKeysHigh[dst] = keyHigh;
+                rs_sortedKeysLow[dst] = keyLow;
+                rs_sortedValues[dst] = value;
+            }
+        }
+        AllMemoryBarrierWithGroupSync();
+        writeToScratch = !writeToScratch;
+    }
+
+    // If pass count is odd, final values are in scratch.
+    if (!writeToScratch)
+    {
+        for (uint i = start; i < end; ++i)
+        {
+            rs_sortedKeysHigh[i] = rs_scratchKeysHigh[i];
+            rs_sortedKeysLow[i] = rs_scratchKeysLow[i];
+            rs_sortedValues[i] = rs_scratchValues[i];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // compute_tile_ranges
 // ---------------------------------------------------------------------------
 StructuredBuffer<uint> tr_sortedKeysHigh; // [M]

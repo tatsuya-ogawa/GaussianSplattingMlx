@@ -539,160 +539,160 @@ class GaussianRenderer {
         return bits
     }
 
-    private lazy var radixExtractBitKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
-            name: "radix_extract_bit_u32_v1",
-            inputNames: ["keyPart", "bitValue"],
-            outputNames: ["oneMask"],
+    private static let fusedRadixSortThreadCount = 128
+
+    private lazy var fusedRadixSortTileKeysKernel: MLXFast.MLXFastKernel = {
+        if let slangKernel = try? SlangKernelSpecLoader.loadKernel(
+            named: "radix_sort_tile_keys_fused_forward_mlx"
+        ) {
+            return slangKernel
+        }
+        Logger.shared.debug(
+            "radix_sort_tile_keys_fused_forward_mlx unavailable. Falling back to inline Metal kernel.")
+        return MLXFast.metalKernel(
+            name: "radix_sort_tile_keys_fused_u32_v1",
+            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "counts"],
+            outputNames: [
+                "sortedKeysHigh", "sortedKeysLow", "sortedValues",
+                "scratchKeysHigh", "scratchKeysLow", "scratchValues",
+            ],
             source: """
-                uint elem = thread_position_in_grid.x;
-                uint n = keyPart_shape[0];
-                if (elem >= n) {
+                const uint THREADS = 128u;
+                const uint RADIX_BITS = 4u;
+                const uint RADIX = 16u;
+                const uint LOW_PASSES = 8u; // 32 bits / 4 bits.
+
+                uint lane = thread_position_in_threadgroup.x;
+                if (lane >= THREADS) {
                     return;
                 }
 
-                uint bit = bitValue;
-                uint value = keyPart[elem];
-                oneMask[elem] = int((value >> bit) & 1u);
+                uint n = counts[0];
+                if (n == 0) {
+                    return;
+                }
+
+                uint chunk = (n + THREADS - 1u) / THREADS;
+                uint start = lane * chunk;
+                uint end = min(start + chunk, n);
+
+                uint highBits = counts[1];
+                uint highPasses = (highBits + RADIX_BITS - 1u) / RADIX_BITS;
+                if (highPasses < 1u) {
+                    highPasses = 1u;
+                }
+                uint totalPasses = LOW_PASSES + highPasses;
+
+                threadgroup uint localHist[2048];
+                threadgroup uint threadBase[2048];
+
+                bool writeToScratch = true;
+
+                for (uint pass = 0u; pass < totalPasses; ++pass) {
+                    uint localBase = lane * RADIX;
+                    for (uint d = 0u; d < RADIX; ++d) {
+                        localHist[localBase + d] = 0u;
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    for (uint i = start; i < end; ++i) {
+                        uint keyHigh;
+                        uint keyLow;
+                        if (pass == 0u) {
+                            keyHigh = keysHighIn[i];
+                            keyLow = keysLowIn[i];
+                        } else if (writeToScratch) {
+                            keyHigh = sortedKeysHigh[i];
+                            keyLow = sortedKeysLow[i];
+                        } else {
+                            keyHigh = scratchKeysHigh[i];
+                            keyLow = scratchKeysLow[i];
+                        }
+
+                        uint digit;
+                        if (pass < LOW_PASSES) {
+                            digit = (keyLow >> (pass * RADIX_BITS)) & (RADIX - 1u);
+                        } else {
+                            uint hiPass = pass - LOW_PASSES;
+                            digit = (keyHigh >> (hiPass * RADIX_BITS)) & (RADIX - 1u);
+                        }
+                        localHist[localBase + digit] += 1u;
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    if (lane == 0u) {
+                        uint running = 0u;
+                        for (uint d = 0u; d < RADIX; ++d) {
+                            uint offset = running;
+                            for (uint t = 0u; t < THREADS; ++t) {
+                                uint idx = t * RADIX + d;
+                                threadBase[idx] = offset;
+                                offset += localHist[idx];
+                            }
+                            running = offset;
+                        }
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    uint localOffsets[16];
+                    for (uint d = 0u; d < RADIX; ++d) {
+                        localOffsets[d] = 0u;
+                    }
+
+                    for (uint i = start; i < end; ++i) {
+                        uint keyHigh;
+                        uint keyLow;
+                        uint value;
+                        if (pass == 0u) {
+                            keyHigh = keysHighIn[i];
+                            keyLow = keysLowIn[i];
+                            value = valuesIn[i];
+                        } else if (writeToScratch) {
+                            keyHigh = sortedKeysHigh[i];
+                            keyLow = sortedKeysLow[i];
+                            value = sortedValues[i];
+                        } else {
+                            keyHigh = scratchKeysHigh[i];
+                            keyLow = scratchKeysLow[i];
+                            value = scratchValues[i];
+                        }
+
+                        uint digit;
+                        if (pass < LOW_PASSES) {
+                            digit = (keyLow >> (pass * RADIX_BITS)) & (RADIX - 1u);
+                        } else {
+                            uint hiPass = pass - LOW_PASSES;
+                            digit = (keyHigh >> (hiPass * RADIX_BITS)) & (RADIX - 1u);
+                        }
+
+                        uint dst = threadBase[localBase + digit] + localOffsets[digit];
+                        localOffsets[digit] += 1u;
+
+                        if (writeToScratch) {
+                            scratchKeysHigh[dst] = keyHigh;
+                            scratchKeysLow[dst] = keyLow;
+                            scratchValues[dst] = value;
+                        } else {
+                            sortedKeysHigh[dst] = keyHigh;
+                            sortedKeysLow[dst] = keyLow;
+                            sortedValues[dst] = value;
+                        }
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+                    writeToScratch = !writeToScratch;
+                }
+
+                // If pass count is odd, final result lives in scratch; copy it out.
+                if (!writeToScratch) {
+                    for (uint i = start; i < end; ++i) {
+                        sortedKeysHigh[i] = scratchKeysHigh[i];
+                        sortedKeysLow[i] = scratchKeysLow[i];
+                        sortedValues[i] = scratchValues[i];
+                    }
+                }
                 """
         )
     }()
-
-    private lazy var radixExtractTwoBitsKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
-            name: "radix_extract_two_bits_u32_v1",
-            inputNames: ["keyPart", "bitValue"],
-            outputNames: ["digit"],
-            source: """
-                uint elem = thread_position_in_grid.x;
-                uint n = keyPart_shape[0];
-                if (elem >= n) {
-                    return;
-                }
-
-                uint bit = bitValue;
-                uint value = keyPart[elem];
-                digit[elem] = int((value >> bit) & 3u);
-                """
-        )
-    }()
-
-    private lazy var radixScatterTripletKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
-            name: "radix_scatter_triplet_u32_v1",
-            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "destIndices"],
-            outputNames: ["keysHighOut", "keysLowOut", "valuesOut"],
-            source: """
-                uint elem = thread_position_in_grid.x;
-                uint n = keysHighIn_shape[0];
-                if (elem >= n) {
-                    return;
-                }
-
-                uint dst = uint(destIndices[elem]);
-                if (dst >= n) {
-                    return;
-                }
-                keysHighOut[dst] = keysHighIn[elem];
-                keysLowOut[dst] = keysLowIn[elem];
-                valuesOut[dst] = valuesIn[elem];
-                """
-        )
-    }()
-
-    private func radixBitPassForTileKeys(
-        keyPart: MLXArray,
-        bit: Int,
-        keysHigh: MLXArray,
-        keysLow: MLXArray,
-        values: MLXArray
-    ) -> (MLXArray, MLXArray, MLXArray) {
-        let n = keyPart.shape[0]
-        let oneMask = radixExtractBitKernel(
-            [keyPart, MLXArray(UInt32(bit))],
-            grid: (max(n, 1), 1, 1),
-            threadGroup: (min(256, max(n, 1)), 1, 1),
-            outputShapes: [[n]],
-            outputDTypes: [.int32]
-        )[0]
-        let zeroMask = 1 - oneMask
-
-        let zeroInclusive = zeroMask.cumsum(axis: 0).asType(.int32)
-        let oneInclusive = oneMask.cumsum(axis: 0).asType(.int32)
-        let zeroExclusive = zeroInclusive - zeroMask
-        let oneExclusive = oneInclusive - oneMask
-        let zeroCount = zeroInclusive[n - 1]
-
-        let destination =
-            zeroExclusive
-            + oneMask * (zeroCount + oneExclusive - zeroExclusive)
-        let destinationIndices = destination.asType(.int32)
-
-        let scattered = radixScatterTripletKernel(
-            [keysHigh, keysLow, values, destinationIndices],
-            grid: (max(n, 1), 1, 1),
-            threadGroup: (min(256, max(n, 1)), 1, 1),
-            outputShapes: [keysHigh.shape, keysLow.shape, values.shape],
-            outputDTypes: [keysHigh.dtype, keysLow.dtype, values.dtype]
-        )
-        return (scattered[0], scattered[1], scattered[2])
-    }
-
-    private func radixTwoBitPassForTileKeys(
-        keyPart: MLXArray,
-        bit: Int,
-        keysHigh: MLXArray,
-        keysLow: MLXArray,
-        values: MLXArray
-    ) -> (MLXArray, MLXArray, MLXArray) {
-        let n = keyPart.shape[0]
-        let digit = radixExtractTwoBitsKernel(
-            [keyPart, MLXArray(UInt32(bit))],
-            grid: (max(n, 1), 1, 1),
-            threadGroup: (min(256, max(n, 1)), 1, 1),
-            outputShapes: [[n]],
-            outputDTypes: [.int32]
-        )[0]
-
-        let mask0 = (digit .== 0).asType(.int32)
-        let mask1 = (digit .== 1).asType(.int32)
-        let mask2 = (digit .== 2).asType(.int32)
-        let mask3 = (digit .== 3).asType(.int32)
-
-        let inc0 = mask0.cumsum(axis: 0).asType(.int32)
-        let inc1 = mask1.cumsum(axis: 0).asType(.int32)
-        let inc2 = mask2.cumsum(axis: 0).asType(.int32)
-        let inc3 = mask3.cumsum(axis: 0).asType(.int32)
-
-        let exc0 = inc0 - mask0
-        let exc1 = inc1 - mask1
-        let exc2 = inc2 - mask2
-        let exc3 = inc3 - mask3
-
-        let count0 = inc0[n - 1]
-        let count1 = inc1[n - 1]
-        let count2 = inc2[n - 1]
-
-        let base1 = count0
-        let base2 = count0 + count1
-        let base3 = count0 + count1 + count2
-
-        let destination =
-            exc0 * mask0
-            + (base1 + exc1) * mask1
-            + (base2 + exc2) * mask2
-            + (base3 + exc3) * mask3
-        let destinationIndices = destination.asType(.int32)
-
-        let scattered = radixScatterTripletKernel(
-            [keysHigh, keysLow, values, destinationIndices],
-            grid: (max(n, 1), 1, 1),
-            threadGroup: (min(256, max(n, 1)), 1, 1),
-            outputShapes: [keysHigh.shape, keysLow.shape, values.shape],
-            outputDTypes: [keysHigh.dtype, keysLow.dtype, values.dtype]
-        )
-        return (scattered[0], scattered[1], scattered[2])
-    }
 
     private func radixSortTileKeys(
         keysHigh: MLXArray,
@@ -700,43 +700,30 @@ class GaussianRenderer {
         values: MLXArray,
         tileBitCount: Int
     ) -> (sortedKeysHigh: MLXArray, sortedKeysLow: MLXArray, sortedValues: MLXArray) {
-        var sortedKeysHigh = keysHigh
-        var sortedKeysLow = keysLow
-        var sortedValues = values
-
-        for bit in stride(from: 0, to: 32, by: 2) {
-            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixTwoBitPassForTileKeys(
-                keyPart: sortedKeysLow,
-                bit: bit,
-                keysHigh: sortedKeysHigh,
-                keysLow: sortedKeysLow,
-                values: sortedValues
-            )
+        let n = keysHigh.shape[0]
+        if n <= 1 {
+            return (keysHigh, keysLow, values)
         }
 
-        let keyHighBits = Swift.max(tileBitCount, 1)
-        var highBit = 0
-        while highBit + 1 < keyHighBits {
-            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixTwoBitPassForTileKeys(
-                keyPart: sortedKeysHigh,
-                bit: highBit,
-                keysHigh: sortedKeysHigh,
-                keysLow: sortedKeysLow,
-                values: sortedValues
-            )
-            highBit += 2
-        }
-        if highBit < keyHighBits {
-            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
-                keyPart: sortedKeysHigh,
-                bit: highBit,
-                keysHigh: sortedKeysHigh,
-                keysLow: sortedKeysLow,
-                values: sortedValues
-            )
-        }
-
-        return (sortedKeysHigh, sortedKeysLow, sortedValues)
+        let outputs = fusedRadixSortTileKeysKernel(
+            [
+                keysHigh,
+                keysLow,
+                values,
+                MLXArray([
+                    UInt32(n),
+                    UInt32(Swift.max(tileBitCount, 1)),
+                ]),
+            ],
+            grid: (Self.fusedRadixSortThreadCount, 1, 1),
+            threadGroup: (Self.fusedRadixSortThreadCount, 1, 1),
+            outputShapes: [[n], [n], [n], [n], [n], [n]],
+            outputDTypes: [
+                keysHigh.dtype, keysLow.dtype, values.dtype,
+                keysHigh.dtype, keysLow.dtype, values.dtype,
+            ]
+        )
+        return (outputs[0], outputs[1], outputs[2])
     }
 
     // MARK: - Global Tile Slice Kernels
