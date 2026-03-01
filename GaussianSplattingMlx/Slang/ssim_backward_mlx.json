@@ -12,85 +12,78 @@
     "ssb_sigma1_1",
     "ssb_sigma2_1",
     "ssb_sigma12_1",
-    "ssb_window_1",
     "ssb_params_1"
   ],
   "output_names": [
     "ssb_gradImg1_1",
     "ssb_gradImg2_1"
   ],
-  "source": "uint3 tid_0 = thread_position_in_grid;\nuint H_0 = ssb_params_1[int(0)];\nuint W_0 = ssb_params_1[int(1)];\nuint C_0 = ssb_params_1[int(2)];\nuint K_0 = ssb_params_1[int(3)];\nuint _S29 = K_0 / 2U;\n\nuint idx_0 = tid_0.x;\nif(idx_0 >= (H_0 * W_0 * C_0))\n{\n    return;\n}\nuint _S30 = idx_0 % C_0;\nuint tmp_0 = idx_0 / C_0;\nuint _S31 = tmp_0 % W_0;\nuint _S32 = tmp_0 / W_0;\nfloat _S33 = ssb_img1_1[idx_0];\nfloat _S34 = ssb_img2_1[idx_0];\nuint ki_0 = 0U;\nfloat grad1_0 = 0.0;\nfloat grad2_0 = 0.0;\nfor(;;)\n{\n    if(ki_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    int _S35 = int(_S29);\n    int cx_0 = int(_S32) - int(ki_0) + _S35;\n    bool _S36;\n    if(cx_0 < int(0))\n    {\n        _S36 = true;\n    }\n    else\n    {\n        _S36 = cx_0 >= int(H_0);\n    }\n    float grad1_1;\n    float grad2_1;\n    if(_S36)\n    {\n        grad1_1 = grad1_0;\n        grad2_1 = grad2_0;\n        ki_0 = ki_0 + 1U;\n        grad1_0 = grad1_1;\n        grad2_0 = grad2_1;\n        continue;\n    }\n    uint kj_0 = 0U;\n    grad1_1 = grad1_0;\n    grad2_1 = grad2_0;\n\n    for(;;)\n    {\n        if(kj_0 < K_0)\n        {\n        }\n        else\n        {\n            break;\n        }\n        int cy_0 = int(_S31) - int(kj_0) + _S35;\n        bool _S37;\n        if(cy_0 < int(0))\n        {\n            _S37 = true;\n        }\n        else\n        {\n            _S37 = cy_0 >= int(W_0);\n        }\n        if(_S37)\n        {\n            kj_0 = kj_0 + 1U;\n            continue;\n        }\n\n        float wt_1 = ssb_window_1[ki_0 * K_0 + kj_0];\n        uint cIdx_0 = uint(cx_0) * W_0 * C_0 + uint(cy_0) * C_0 + _S30;\n\n        float upstream_0 = ssb_gradOutput_1[cIdx_0];\n        float m1_0 = ssb_mu1_1[cIdx_0];\n        float m2_0 = ssb_mu2_1[cIdx_0];\n        float _S38 = wt_1 * _S33;\n        float baseMu1_1 = m1_0 - _S38;\n        float _S39 = wt_1 * _S34;\n        float baseMu2_1 = m2_0 - _S39;\n        float baseSumW1Sq_1 = ssb_sigma1_1[cIdx_0] + m1_0 * m1_0 - _S38 * _S33;\n        float baseSumW2Sq_1 = ssb_sigma2_1[cIdx_0] + m2_0 * m2_0 - _S39 * _S34;\n        float baseSumW12_1 = ssb_sigma12_1[cIdx_0] + m1_0 * m2_0 - _S38 * _S34;\n\n        thread DiffPair_float_0 dpV1_0;\n        (&dpV1_0)->primal_0 = _S33;\n        (&dpV1_0)->differential_0 = 0.0;\n        thread DiffPair_float_0 dpV2_0;\n        (&dpV2_0)->primal_0 = _S34;\n        (&dpV2_0)->differential_0 = 0.0;\n        s_bwd_ssimFromCenterAndTargetPixel_0(&dpV1_0, &dpV2_0, wt_1, baseMu1_1, baseMu2_1, baseSumW1Sq_1, baseSumW2Sq_1, baseSumW12_1, 0.00009999999747379, 0.00089999998454005, upstream_0);\n        float grad2_2 = grad2_1 + dpV2_0.differential_0;\n        grad1_1 = grad1_1 + dpV1_0.differential_0;\n        grad2_1 = grad2_2;\n        kj_0 = kj_0 + 1U;\n    }\n    ki_0 = ki_0 + 1U;\n    grad1_0 = grad1_1;\n    grad2_0 = grad2_1;\n}\n*(ssb_gradImg1_1+idx_0) = grad1_0;\n*(ssb_gradImg2_1+idx_0) = grad2_0;\nreturn;",
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint H_0 = ssb_params_1[int(0)];\nuint W_0 = ssb_params_1[int(1)];\nuint C_0 = ssb_params_1[int(2)];\nuint K_0 = ssb_params_1[int(3)];\nbool _S29;\nif(K_0 == 0U)\n{\n    _S29 = true;\n}\nelse\n{\n    _S29 = K_0 > 32U;\n}\nif(_S29)\n{\n    return;\n}\nuint _S30 = K_0 / 2U;\n\nuint idx_0 = tid_0.x;\nif(idx_0 >= (H_0 * W_0 * C_0))\n{\n    return;\n}\nuint _S31 = idx_0 % C_0;\nuint tmp_0 = idx_0 / C_0;\nuint _S32 = tmp_0 % W_0;\nuint _S33 = tmp_0 / W_0;\nfloat _S34 = ssb_img1_1[idx_0];\nfloat _S35 = ssb_img2_1[idx_0];\n\nthread array<float, int(32)> w1d_0;\nfloat _S36 = float(K_0) * 0.5;\nuint i_0 = 0U;\nfloat sum1d_0 = 0.0;\n\nfor(;;)\n{\n    if(i_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    float dx_0 = float(i_0) - _S36;\n    float w_0 = exp(- (dx_0 * dx_0) * 0.2222222238779068);\n    w1d_0[i_0] = w_0;\n    float sum1d_1 = sum1d_0 + w_0;\n    i_0 = i_0 + 1U;\n    sum1d_0 = sum1d_1;\n}\nfloat _S37 = 1.0 / max(sum1d_0, 9.99999993922529029e-09);\ni_0 = 0U;\nfor(;;)\n{\n    if(i_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    w1d_0[i_0] = w1d_0[i_0] * _S37;\n    i_0 = i_0 + 1U;\n}\nuint ki_0 = 0U;\nfloat grad1_0 = 0.0;\nfloat grad2_0 = 0.0;\nfor(;;)\n{\n    if(ki_0 < K_0)\n    {\n    }\n    else\n    {\n        break;\n    }\n    int _S38 = int(_S30);\n    int cx_0 = int(_S33) - int(ki_0) + _S38;\n    if(cx_0 < int(0))\n    {\n        _S29 = true;\n    }\n    else\n    {\n        _S29 = cx_0 >= int(H_0);\n    }\n    float grad1_1;\n    float grad2_1;\n    if(_S29)\n    {\n        grad1_1 = grad1_0;\n        grad2_1 = grad2_0;\n        ki_0 = ki_0 + 1U;\n        grad1_0 = grad1_1;\n        grad2_0 = grad2_1;\n        continue;\n    }\n    uint kj_0 = 0U;\n    grad1_1 = grad1_0;\n    grad2_1 = grad2_0;\n\n    for(;;)\n    {\n        if(kj_0 < K_0)\n        {\n        }\n        else\n        {\n            break;\n        }\n        int cy_0 = int(_S32) - int(kj_0) + _S38;\n        bool _S39;\n        if(cy_0 < int(0))\n        {\n            _S39 = true;\n        }\n        else\n        {\n            _S39 = cy_0 >= int(W_0);\n        }\n        if(_S39)\n        {\n            kj_0 = kj_0 + 1U;\n            continue;\n        }\n\n        float wt_1 = w1d_0[ki_0] * w1d_0[kj_0];\n        uint cIdx_0 = uint(cx_0) * W_0 * C_0 + uint(cy_0) * C_0 + _S31;\n\n        float upstream_0 = ssb_gradOutput_1[cIdx_0];\n        float m1_0 = ssb_mu1_1[cIdx_0];\n        float m2_0 = ssb_mu2_1[cIdx_0];\n        float _S40 = wt_1 * _S34;\n        float baseMu1_1 = m1_0 - _S40;\n        float _S41 = wt_1 * _S35;\n        float baseMu2_1 = m2_0 - _S41;\n        float baseSumW1Sq_1 = ssb_sigma1_1[cIdx_0] + m1_0 * m1_0 - _S40 * _S34;\n        float baseSumW2Sq_1 = ssb_sigma2_1[cIdx_0] + m2_0 * m2_0 - _S41 * _S35;\n        float baseSumW12_1 = ssb_sigma12_1[cIdx_0] + m1_0 * m2_0 - _S40 * _S35;\n\n        thread DiffPair_float_0 dpV1_0;\n        (&dpV1_0)->primal_0 = _S34;\n        (&dpV1_0)->differential_0 = 0.0;\n        thread DiffPair_float_0 dpV2_0;\n        (&dpV2_0)->primal_0 = _S35;\n        (&dpV2_0)->differential_0 = 0.0;\n        s_bwd_ssimFromCenterAndTargetPixel_0(&dpV1_0, &dpV2_0, wt_1, baseMu1_1, baseMu2_1, baseSumW1Sq_1, baseSumW2Sq_1, baseSumW12_1, 0.00009999999747379, 0.00089999998454005, upstream_0);\n        float grad2_2 = grad2_1 + dpV2_0.differential_0;\n        grad1_1 = grad1_1 + dpV1_0.differential_0;\n        grad2_1 = grad2_2;\n        kj_0 = kj_0 + 1U;\n    }\n    ki_0 = ki_0 + 1U;\n    grad1_0 = grad1_1;\n    grad2_0 = grad2_1;\n}\n*(ssb_gradImg1_1+idx_0) = grad1_0;\n*(ssb_gradImg2_1+idx_0) = grad2_0;\nreturn;",
   "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;\nstruct DiffPair_float_0\n{\n    float primal_0;\n    float differential_0;\n};\nvoid s_bwd_prop_ssimFromCenterAndTargetPixel_0(DiffPair_float_0 thread* dpv1_0, DiffPair_float_0 thread* dpv2_0, float wt_0, float baseMu1_0, float baseMu2_0, float baseSumW1Sq_0, float baseSumW2Sq_0, float baseSumW12_0, float C1_0, float C2_0, float _s_dOut_0)\n{\n    float _S1 = wt_0 * (*dpv1_0).primal_0;\n    float mu1_0 = baseMu1_0 + _S1;\n    float _S2 = wt_0 * (*dpv2_0).primal_0;\n    float mu2_0 = baseMu2_0 + _S2;\n    float _S3 = mu1_0 * mu1_0;\n    float _S4 = mu2_0 * mu2_0;\n\n    float _S5 = 2.0 * mu1_0;\n    float a_0 = _S5 * mu2_0 + C1_0;\n    float b_0 = 2.0 * (baseSumW12_0 + _S1 * (*dpv2_0).primal_0 - mu1_0 * mu2_0) + C2_0;\n    float c_0 = _S3 + _S4 + C1_0;\n    float d_0 = baseSumW1Sq_0 + _S1 * (*dpv1_0).primal_0 - _S3 + (baseSumW2Sq_0 + _S2 * (*dpv2_0).primal_0 - _S4) + C2_0;\n    float _S6 = c_0 * d_0;\n    float _S7 = _s_dOut_0 / (_S6 * _S6);\n    float _S8 = a_0 * b_0 * - _S7;\n    float _S9 = _S6 * _S7;\n    float s_diff_sumW1Sq_T_0 = c_0 * _S8;\n    float s_diff_a_T_0 = b_0 * _S9;\n    float s_diff_sumW12_T_0 = 2.0 * (a_0 * _S9);\n    float _S10 = - s_diff_sumW12_T_0;\n    float _S11 = d_0 * _S8 + - s_diff_sumW1Sq_T_0;\n    float _S12 = mu2_0 * _S11;\n    float _S13 = mu1_0 * _S11;\n    float _S14 = _S1 * s_diff_sumW1Sq_T_0;\n    float _S15 = wt_0 * ((*dpv2_0).primal_0 * s_diff_sumW12_T_0 + (*dpv1_0).primal_0 * s_diff_sumW1Sq_T_0 + (2.0 * (mu2_0 * s_diff_a_T_0) + mu2_0 * _S10 + _S13 + _S13));\n    float _S16 = _S1 * s_diff_sumW12_T_0 + _S2 * s_diff_sumW1Sq_T_0 + wt_0 * ((*dpv2_0).primal_0 * s_diff_sumW1Sq_T_0 + (_S5 * s_diff_a_T_0 + mu1_0 * _S10 + _S12 + _S12));\n    dpv2_0->primal_0 = (*dpv2_0).primal_0;\n    dpv2_0->differential_0 = _S16;\n    float _S17 = _S14 + _S15;\n    dpv1_0->primal_0 = (*dpv1_0).primal_0;\n    dpv1_0->differential_0 = _S17;\n    return;\n}\nvoid s_bwd_ssimFromCenterAndTargetPixel_0(DiffPair_float_0 thread* _S18, DiffPair_float_0 thread* _S19, float _S20, float _S21, float _S22, float _S23, float _S24, float _S25, float _S26, float _S27, float _S28)\n{\n    s_bwd_prop_ssimFromCenterAndTargetPixel_0(_S18, _S19, _S20, _S21, _S22, _S23, _S24, _S25, _S26, _S27, _S28);\n    return;\n}",
   "buffer_parameters": [
     {
       "name": "ssb_gradOutput_1",
-      "buffer_index": 10,
+      "buffer_index": 9,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_img1_1",
-      "buffer_index": 11,
+      "buffer_index": 10,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_img2_1",
-      "buffer_index": 12,
+      "buffer_index": 11,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_mu1_1",
-      "buffer_index": 13,
+      "buffer_index": 12,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_mu2_1",
-      "buffer_index": 14,
+      "buffer_index": 13,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_sigma1_1",
-      "buffer_index": 15,
+      "buffer_index": 14,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_sigma2_1",
-      "buffer_index": 16,
+      "buffer_index": 15,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_sigma12_1",
-      "buffer_index": 17,
-      "role": "input",
-      "type": "float device*"
-    },
-    {
-      "name": "ssb_window_1",
-      "buffer_index": 18,
+      "buffer_index": 16,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "ssb_params_1",
-      "buffer_index": 19,
+      "buffer_index": 17,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "ssb_gradImg1_1",
-      "buffer_index": 20,
+      "buffer_index": 18,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "ssb_gradImg2_1",
-      "buffer_index": 21,
+      "buffer_index": 19,
       "role": "output",
       "type": "float device*"
     }

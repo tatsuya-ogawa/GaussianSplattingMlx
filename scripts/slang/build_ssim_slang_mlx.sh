@@ -64,11 +64,11 @@ for entry in "${entries[@]}"; do
   output_names=""
   case "$entry" in
     ssim_forward)
-      input_names="ssf_img1_1,ssf_img2_1,ssf_window_1,ssf_params_1"
+      input_names="ssf_img1_1,ssf_img2_1,ssf_params_1"
       output_names="ssf_outSsim_1,ssf_outMu1_1,ssf_outMu2_1,ssf_outSigma1_1,ssf_outSigma2_1,ssf_outSigma12_1"
       ;;
     ssim_backward)
-      input_names="ssb_gradOutput_1,ssb_img1_1,ssb_img2_1,ssb_mu1_1,ssb_mu2_1,ssb_sigma1_1,ssb_sigma2_1,ssb_sigma12_1,ssb_window_1,ssb_params_1"
+      input_names="ssb_gradOutput_1,ssb_img1_1,ssb_img2_1,ssb_mu1_1,ssb_mu2_1,ssb_sigma1_1,ssb_sigma2_1,ssb_sigma12_1,ssb_params_1"
       output_names="ssb_gradImg1_1,ssb_gradImg2_1"
       ;;
     *)

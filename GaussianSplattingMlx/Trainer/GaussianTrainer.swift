@@ -552,11 +552,8 @@ class GaussianTrainer {
             return nil
         }
 
-        // Precompute symmetric 2D Gaussian window (11×11, sigma=1.5)
+        // Gaussian window is generated inside Slang kernels (sigma=1.5).
         let windowSize = 11
-        let g1d = gaussian(windowSize: windowSize, sigma: 1.5)
-        let g2d = g1d.reshaped([windowSize, 1]).matmul(g1d.reshaped([1, windowSize]))
-        let window = g2d.reshaped([windowSize * windowSize])
 
         // Saved forward intermediates for backward
         var savedMu1: MLXArray?
@@ -575,7 +572,7 @@ class GaussianTrainer {
             let params = MLXArray([UInt32(H), UInt32(W), UInt32(C), UInt32(windowSize)])
 
             let outputs = forwardKernel(
-                [img1.reshaped([-1]), img2.reshaped([-1]), window, params],
+                [img1.reshaped([-1]), img2.reshaped([-1]), params],
                 grid: (max(totalPixels, 1), 1, 1),
                 threadGroup: (min(256, max(totalPixels, 1)), 1, 1),
                 outputShapes: Array(repeating: [totalPixels], count: 6),
@@ -605,7 +602,7 @@ class GaussianTrainer {
                     [
                         gradOutput, img1.reshaped([-1]), img2.reshaped([-1]),
                         savedMu1!, savedMu2!, savedSigma1!, savedSigma2!, savedSigma12!,
-                        window, params,
+                        params,
                     ],
                     grid: (max(totalPixels, 1), 1, 1),
                     threadGroup: (min(256, max(totalPixels, 1)), 1, 1),
