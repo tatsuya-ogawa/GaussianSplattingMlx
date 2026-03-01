@@ -1,0 +1,173 @@
+{
+  "metal": "build/slang_projection/gaussian_projection_screen_fused_backward.metal",
+  "entry": "gaussian_projection_screen_fused_backward",
+  "kernel_name": "gaussian_projection_screen_fused_backward_slang_v1",
+  "kernel_var": "gaussian_projection_screen_fused_backwardKernel",
+  "input_names": [
+    "fused_bwd_scales_1",
+    "fused_bwd_rotations_1",
+    "fused_bwd_means3d_1",
+    "fused_bwd_shs_1",
+    "fused_bwd_cameraCenter_1",
+    "fused_bwd_viewMatrix_1",
+    "fused_bwd_fovX_1",
+    "fused_bwd_fovY_1",
+    "fused_bwd_focalX_1",
+    "fused_bwd_focalY_1",
+    "fused_bwd_imageWidth_1",
+    "fused_bwd_imageHeight_1",
+    "fused_bwd_cotMeans2d_1",
+    "fused_bwd_cotCov2d_1",
+    "fused_bwd_cotColor_1",
+    "fused_bwd_cotConic_1",
+    "fused_bwd_counts_1"
+  ],
+  "output_names": [
+    "fused_bwd_gradMeanNdc_1",
+    "fused_bwd_gradMeans3dScreen_1",
+    "fused_bwd_gradShs_1",
+    "fused_bwd_gradCov3d_1",
+    "fused_bwd_gradCameraCenterPoint_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint p_0 = tid_0.x;\n\nif(p_0 >= fused_bwd_counts_1[int(0)])\n{\n    return;\n}\n\nint degree_0 = int(fused_bwd_counts_1[int(1)]);\nint _S12 = degree_0 + int(1);\nint _S13 = _S12 * _S12;\nint coeffStride_0 = int(fused_bwd_counts_1[int(2)]);\n\nuint meansBase_0 = p_0 * 3U;\nfloat m0_1 = fused_bwd_means3d_1[meansBase_0];\nuint _S14 = meansBase_0 + 1U;\nfloat m1_1 = fused_bwd_means3d_1[_S14];\nuint _S15 = meansBase_0 + 2U;\nfloat m2_1 = fused_bwd_means3d_1[_S15];\n\nfloat x_0 = m0_1 - fused_bwd_cameraCenter_1[int(0)];\nfloat y_0 = m1_1 - fused_bwd_cameraCenter_1[int(1)];\nfloat z_0 = m2_1 - fused_bwd_cameraCenter_1[int(2)];\nfloat xx_0 = x_0 * x_0;\nfloat yy_0 = y_0 * y_0;\nfloat zz_0 = z_0 * z_0;\nfloat xy_0 = x_0 * y_0;\nfloat yz_0 = y_0 * z_0;\nfloat xz_0 = x_0 * z_0;\n\nthread array<float, int(25)> basis_0;\nthread array<float, int(25)> dbx_0;\nthread array<float, int(25)> dby_0;\nthread array<float, int(25)> dbz_0;\nint i_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(25))\n    {\n    }\n    else\n    {\n        break;\n    }\n    basis_0[i_0] = 0.0;\n    dbx_0[i_0] = 0.0;\n    dby_0[i_0] = 0.0;\n    dbz_0[i_0] = 0.0;\n    i_0 = i_0 + int(1);\n}\nbasis_0[int(0)] = 0.282094806432724;\nif(degree_0 > int(0))\n{\n    basis_0[int(1)] = -0.48860251903533936 * y_0;\n    basis_0[int(2)] = 0.48860251903533936 * z_0;\n    basis_0[int(3)] = -0.48860251903533936 * x_0;\n    dby_0[int(1)] = -0.48860251903533936;\n    dbz_0[int(2)] = 0.48860251903533936;\n    dbx_0[int(3)] = -0.48860251903533936;\n}\nif(degree_0 > int(1))\n{\n    basis_0[int(4)] = 1.09254848957061768 * xy_0;\n    basis_0[int(5)] = -1.09254848957061768 * yz_0;\n    basis_0[int(6)] = 0.31539157032966614 * (2.0 * zz_0 - xx_0 - yy_0);\n    basis_0[int(7)] = -1.09254848957061768 * xz_0;\n    basis_0[int(8)] = 0.54627424478530884 * (xx_0 - yy_0);\n\n    dbx_0[int(4)] = 1.09254848957061768 * y_0;\n    dby_0[int(4)] = 1.09254848957061768 * x_0;\n    float _S16 = -1.09254848957061768 * z_0;\n    dby_0[int(5)] = _S16;\n    dbz_0[int(5)] = -1.09254848957061768 * y_0;\n    dbx_0[int(6)] = 0.31539157032966614 * (-2.0 * x_0);\n    float _S17 = -2.0 * y_0;\n    dby_0[int(6)] = 0.31539157032966614 * _S17;\n    dbz_0[int(6)] = 0.31539157032966614 * (4.0 * z_0);\n    dbx_0[int(7)] = _S16;\n    dbz_0[int(7)] = -1.09254848957061768 * x_0;\n    dbx_0[int(8)] = 0.54627424478530884 * (2.0 * x_0);\n    dby_0[int(8)] = 0.54627424478530884 * _S17;\n}\nif(degree_0 > int(2))\n{\n    float _S18 = 3.0 * xx_0;\n    basis_0[int(9)] = -0.59004360437393188 * y_0 * (_S18 - yy_0);\n    float _S19 = 2.89061141014099121 * xy_0;\n    basis_0[int(10)] = _S19 * z_0;\n    float _S20 = 4.0 * zz_0;\n    float _S21 = _S20 - xx_0;\n    float _S22 = _S21 - yy_0;\n    basis_0[int(11)] = -0.4570457935333252 * y_0 * _S22;\n    float _S23 = 3.0 * yy_0;\n    basis_0[int(12)] = 0.37317633628845215 * z_0 * (2.0 * zz_0 - _S18 - _S23);\n    basis_0[int(13)] = -0.4570457935333252 * x_0 * _S22;\n    float _S24 = xx_0 - yy_0;\n    basis_0[int(14)] = 1.44530570507049561 * z_0 * _S24;\n    basis_0[int(15)] = -0.59004360437393188 * x_0 * (xx_0 - _S23);\n\n    dbx_0[int(9)] = -0.59004360437393188 * (6.0 * x_0 * y_0);\n    float _S25 = -0.59004360437393188 * (_S18 - _S23);\n    dby_0[int(9)] = _S25;\n    dbx_0[int(10)] = 2.89061141014099121 * yz_0;\n    dby_0[int(10)] = 2.89061141014099121 * xz_0;\n    dbz_0[int(10)] = _S19;\n    float _S26 = -0.4570457935333252 * (-2.0 * x_0 * y_0);\n    dbx_0[int(11)] = _S26;\n    dby_0[int(11)] = -0.4570457935333252 * (_S21 - _S23);\n    dbz_0[int(11)] = -0.4570457935333252 * (8.0 * y_0 * z_0);\n    float _S27 = -6.0 * x_0;\n    dbx_0[int(12)] = 0.37317633628845215 * (_S27 * z_0);\n    dby_0[int(12)] = 0.37317633628845215 * (-6.0 * y_0 * z_0);\n    dbz_0[int(12)] = 0.37317633628845215 * (6.0 * zz_0 - _S18 - _S23);\n    dbx_0[int(13)] = -0.4570457935333252 * (_S20 - _S18 - yy_0);\n    dby_0[int(13)] = _S26;\n    dbz_0[int(13)] = -0.4570457935333252 * (8.0 * x_0 * z_0);\n    dbx_0[int(14)] = 1.44530570507049561 * (2.0 * x_0 * z_0);\n    dby_0[int(14)] = 1.44530570507049561 * (-2.0 * y_0 * z_0);\n    dbz_0[int(14)] = 1.44530570507049561 * _S24;\n    dbx_0[int(15)] = _S25;\n    dby_0[int(15)] = -0.59004360437393188 * (_S27 * y_0);\n}\nif(degree_0 > int(3))\n{\n    float _S28 = xx_0 - yy_0;\n    basis_0[int(16)] = 2.50334286689758301 * xy_0 * _S28;\n    float _S29 = 3.0 * xx_0;\n    float _S30 = _S29 - yy_0;\n    basis_0[int(17)] = -1.77013075351715088 * yz_0 * _S30;\n    float _S31 = 7.0 * zz_0;\n    float _S32 = _S31 - 1.0;\n    basis_0[int(18)] = 0.94617468118667603 * xy_0 * _S32;\n    float _S33 = _S31 - 3.0;\n    basis_0[int(19)] = -0.66904652118682861 * yz_0 * _S33;\n    basis_0[int(20)] = 0.1057855486869812 * (zz_0 * (35.0 * zz_0 - 30.0) + 3.0);\n    basis_0[int(21)] = -0.66904652118682861 * xz_0 * _S33;\n    basis_0[int(22)] = 0.47308734059333801 * _S28 * _S32;\n    float _S34 = xx_0 - 3.0 * yy_0;\n    basis_0[int(23)] = -1.77013075351715088 * xz_0 * _S34;\n    basis_0[int(24)] = 0.62583571672439575 * (xx_0 * _S34 - yy_0 * _S30);\n\n    dbx_0[int(16)] = 2.50334286689758301 * y_0 * _S30;\n    dby_0[int(16)] = 2.50334286689758301 * x_0 * _S34;\n    dbx_0[int(17)] = -1.77013075351715088 * (6.0 * x_0 * y_0 * z_0);\n    float _S35 = -1.77013075351715088 * (3.0 * z_0 * _S28);\n    dby_0[int(17)] = _S35;\n    dbz_0[int(17)] = -1.77013075351715088 * y_0 * _S30;\n    dbx_0[int(18)] = 0.94617468118667603 * y_0 * _S32;\n    dby_0[int(18)] = 0.94617468118667603 * x_0 * _S32;\n    dbz_0[int(18)] = 0.94617468118667603 * (14.0 * x_0 * y_0 * z_0);\n    float _S36 = -0.66904652118682861 * z_0 * _S33;\n    dby_0[int(19)] = _S36;\n    float _S37 = 21.0 * zz_0 - 3.0;\n    dbz_0[int(19)] = -0.66904652118682861 * y_0 * _S37;\n    dbz_0[int(20)] = 0.1057855486869812 * (140.0 * z_0 * z_0 * z_0 - 60.0 * z_0);\n    dbx_0[int(21)] = _S36;\n    dbz_0[int(21)] = -0.66904652118682861 * x_0 * _S37;\n    dbx_0[int(22)] = 0.47308734059333801 * (2.0 * x_0) * _S32;\n    dby_0[int(22)] = 0.47308734059333801 * (-2.0 * y_0) * _S32;\n    dbz_0[int(22)] = 0.47308734059333801 * (14.0 * z_0 * _S28);\n    dbx_0[int(23)] = _S35;\n    dby_0[int(23)] = -1.77013075351715088 * (-6.0 * x_0 * y_0 * z_0);\n    dbz_0[int(23)] = -1.77013075351715088 * x_0 * _S34;\n    dbx_0[int(24)] = 0.62583571672439575 * (4.0 * x_0 * _S34);\n    dby_0[int(24)] = 0.62583571672439575 * (4.0 * y_0 * (yy_0 - _S29));\n}\nfloat g_0;\nfloat value_0;\nint k_0;\nint k_1;\nuint _S38 = p_0 * uint(coeffStride_0 * int(3));\nint ch_0 = int(0);\nfloat colorGradX_0 = 0.0;\nfloat colorGradY_0 = 0.0;\nfloat colorGradZ_0 = 0.0;\n\nfor(;;)\n{\n    if(ch_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_0 = int(0);\n    value_0 = 0.0;\n\n    for(;;)\n    {\n        if(k_0 < _S13)\n        {\n        }\n        else\n        {\n            break;\n        }\n\n        float value_1 = value_0 + basis_0[k_0] * fused_bwd_shs_1[_S38 + uint(k_0 * int(3) + ch_0)];\n        k_0 = k_0 + int(1);\n        value_0 = value_1;\n    }\n    float _S39 = fused_bwd_cotColor_1[meansBase_0 + uint(ch_0)];\n    if((value_0 + 0.5) <= 0.0)\n    {\n        g_0 = 0.0;\n    }\n    else\n    {\n        g_0 = _S39;\n    }\n    k_1 = int(0);\n    for(;;)\n    {\n        if(k_1 < _S13)\n        {\n        }\n        else\n        {\n            break;\n        }\n        uint shIndex_0 = _S38 + uint(k_1 * int(3) + ch_0);\n        float shValue_0 = fused_bwd_shs_1[shIndex_0];\n        *(fused_bwd_gradShs_1+shIndex_0) = g_0 * basis_0[k_1];\n        float _S40 = g_0 * shValue_0;\n        float colorGradX_1 = colorGradX_0 + _S40 * dbx_0[k_1];\n        float colorGradY_1 = colorGradY_0 + _S40 * dby_0[k_1];\n        float colorGradZ_1 = colorGradZ_0 + _S40 * dbz_0[k_1];\n        k_1 = k_1 + int(1);\n        colorGradX_0 = colorGradX_1;\n        colorGradY_0 = colorGradY_1;\n        colorGradZ_0 = colorGradZ_1;\n    }\n    ch_0 = ch_0 + int(1);\n}\nuint rotBase_0 = p_0 * 4U;\nuint _S41 = rotBase_0 + 1U;\nuint _S42 = rotBase_0 + 2U;\nuint _S43 = rotBase_0 + 3U;\nCov3dValues_0 cov3d_1 = buildCov3dFromScaleRotation_0(fused_bwd_scales_1[meansBase_0], fused_bwd_scales_1[_S14], fused_bwd_scales_1[_S15], fused_bwd_rotations_1[rotBase_0], fused_bwd_rotations_1[_S41], fused_bwd_rotations_1[_S42], fused_bwd_rotations_1[_S43]);\nfloat a00_1 = fused_bwd_viewMatrix_1[int(0)];\nfloat a01_1 = fused_bwd_viewMatrix_1[int(1)];\nfloat a02_1 = fused_bwd_viewMatrix_1[int(2)];\nfloat a10_1 = fused_bwd_viewMatrix_1[int(4)];\nfloat a11_1 = fused_bwd_viewMatrix_1[int(5)];\nfloat a12_1 = fused_bwd_viewMatrix_1[int(6)];\nfloat a20_1 = fused_bwd_viewMatrix_1[int(8)];\nfloat a21_1 = fused_bwd_viewMatrix_1[int(9)];\nfloat a22_1 = fused_bwd_viewMatrix_1[int(10)];\nfloat _S44 = fused_bwd_viewMatrix_1[int(12)];\nfloat _S45 = fused_bwd_viewMatrix_1[int(13)];\nfloat _S46 = fused_bwd_viewMatrix_1[int(14)];\nfloat _S47 = fused_bwd_fovX_1[int(0)];\nfloat _S48 = fused_bwd_fovY_1[int(0)];\nfloat _S49 = fused_bwd_focalX_1[int(0)];\nfloat _S50 = fused_bwd_focalY_1[int(0)];\nthread Cov3dValues_0 _S51 = cov3d_1;\nCov2dValues_0 _S52 = buildCov2dFromCov3d_0(m0_1, m1_1, m2_1, &_S51, a00_1, a01_1, a02_1, a10_1, a11_1, a12_1, a20_1, a21_1, a22_1, _S44, _S45, _S46, _S47, _S48, _S49, _S50);\nfloat det_0 = _S52.c00_1 * _S52.c11_1 - _S52.c01_1 * _S52.c10_1;\nfloat inv00_0 = _S52.c11_1 / det_0;\nfloat inv01_0 = - _S52.c01_1 / det_0;\nfloat inv10_0 = - _S52.c10_1 / det_0;\nfloat inv11_0 = _S52.c00_1 / det_0;\n\nfloat cotConic00_0 = fused_bwd_cotConic_1[rotBase_0];\nfloat cotConic01_0 = fused_bwd_cotConic_1[_S41];\nfloat cotConic10_0 = fused_bwd_cotConic_1[_S42];\nfloat cotConic11_0 = fused_bwd_cotConic_1[_S43];\n\nfloat tt00_0 = inv00_0 * cotConic00_0 + inv10_0 * cotConic10_0;\nfloat tt01_0 = inv00_0 * cotConic01_0 + inv10_0 * cotConic11_0;\nfloat tt10_0 = inv01_0 * cotConic00_0 + inv11_0 * cotConic10_0;\nfloat tt11_0 = inv01_0 * cotConic01_0 + inv11_0 * cotConic11_0;\nfloat totalCotCov00_0 = fused_bwd_cotCov2d_1[rotBase_0] + - (tt00_0 * inv00_0 + tt01_0 * inv01_0);\nfloat totalCotCov01_0 = fused_bwd_cotCov2d_1[_S41] + - (tt00_0 * inv10_0 + tt01_0 * inv11_0);\nfloat totalCotCov10_0 = fused_bwd_cotCov2d_1[_S42] + - (tt10_0 * inv00_0 + tt11_0 * inv01_0);\nfloat totalCotCov11_0 = fused_bwd_cotCov2d_1[_S43] + - (tt10_0 * inv10_0 + tt11_0 * inv11_0);\n\nfloat t0_0 = m0_1 * a00_1 + m1_1 * a10_1 + m2_1 * a20_1 + fused_bwd_viewMatrix_1[int(12)];\nfloat t1_0 = m0_1 * a01_1 + m1_1 * a11_1 + m2_1 * a21_1 + fused_bwd_viewMatrix_1[int(13)];\nfloat t2_1 = m0_1 * a02_1 + m1_1 * a12_1 + m2_1 * a22_1 + fused_bwd_viewMatrix_1[int(14)];\n\nfloat tanFovX_1 = tan(fused_bwd_fovX_1[int(0)] * 0.5);\nfloat tanFovY_1 = tan(fused_bwd_fovY_1[int(0)] * 0.5);\nfloat minX_0 = - tanFovX_1 * 1.29999995231628418;\nfloat maxX_0 = tanFovX_1 * 1.29999995231628418;\nfloat minY_0 = - tanFovY_1 * 1.29999995231628418;\nfloat maxY_0 = tanFovY_1 * 1.29999995231628418;\nfloat clipX_0 = clamp(t2_1, minX_0, maxX_0);\nfloat clipY_0 = clamp(t2_1, minY_0, maxY_0);\nfloat tx_0 = t0_0 / clipX_0 * t2_1;\nfloat ty_0 = t1_0 / clipY_0 * t2_1;\n\nfloat j00_1 = fused_bwd_focalX_1[int(0)] / t2_1;\nfloat _S53 = t2_1 * t2_1;\nfloat j02_1 = - tx_0 * fused_bwd_focalX_1[int(0)] / _S53;\nfloat j11_1 = fused_bwd_focalY_1[int(0)] / t2_1;\nfloat j12_1 = - ty_0 * fused_bwd_focalY_1[int(0)] / _S53;\nthread array<float, int(9)> b_0;\nfloat _S54 = j00_1 * a00_1 + j02_1 * a02_1;\nb_0[int(0)] = _S54;\nfloat _S55 = j00_1 * a10_1 + j02_1 * a12_1;\nb_0[int(1)] = _S55;\nfloat _S56 = j00_1 * a20_1 + j02_1 * a22_1;\nb_0[int(2)] = _S56;\nfloat _S57 = j11_1 * a01_1 + j12_1 * a02_1;\nb_0[int(3)] = _S57;\nfloat _S58 = j11_1 * a11_1 + j12_1 * a12_1;\nb_0[int(4)] = _S58;\nfloat _S59 = j11_1 * a21_1 + j12_1 * a22_1;\nb_0[int(5)] = _S59;\nb_0[int(6)] = 0.0;\nb_0[int(7)] = 0.0;\nb_0[int(8)] = 0.0;\n\nthread array<float, int(9)> c_0;\nc_0[int(0)] = cov3d_1.c00_0;\nc_0[int(1)] = cov3d_1.c01_0;\nc_0[int(2)] = cov3d_1.c02_0;\nc_0[int(3)] = cov3d_1.c10_0;\nc_0[int(4)] = cov3d_1.c11_0;\nc_0[int(5)] = cov3d_1.c12_0;\nc_0[int(6)] = cov3d_1.c20_0;\nc_0[int(7)] = cov3d_1.c21_0;\nc_0[int(8)] = cov3d_1.c22_0;\n\nthread array<float, int(9)> cotM_0;\ncotM_0[int(0)] = totalCotCov00_0;\ncotM_0[int(1)] = totalCotCov01_0;\ncotM_0[int(2)] = 0.0;\ncotM_0[int(3)] = totalCotCov10_0;\ncotM_0[int(4)] = totalCotCov11_0;\ncotM_0[int(5)] = 0.0;\ncotM_0[int(6)] = 0.0;\ncotM_0[int(7)] = 0.0;\ncotM_0[int(8)] = 0.0;\n\nthread array<float, int(9)> bt_0;\nbt_0[int(0)] = _S54;\nbt_0[int(1)] = _S57;\nbt_0[int(2)] = 0.0;\nbt_0[int(3)] = _S55;\nbt_0[int(4)] = _S58;\nbt_0[int(5)] = 0.0;\nbt_0[int(6)] = _S56;\nbt_0[int(7)] = _S59;\nbt_0[int(8)] = 0.0;\n\nthread array<float, int(9)> tmpA_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_1 = int(0);\n\n    for(;;)\n    {\n        if(k_1 < int(3))\n        {\n        }\n        else\n        {\n            break;\n        }\n        k_0 = int(0);\n        value_0 = 0.0;\n\n        for(;;)\n        {\n            if(k_0 < int(3))\n            {\n            }\n            else\n            {\n                break;\n            }\n            float v_0 = value_0 + bt_0[i_0 * int(3) + k_0] * cotM_0[k_0 * int(3) + k_1];\n            k_0 = k_0 + int(1);\n            value_0 = v_0;\n        }\n\n        tmpA_0[i_0 * int(3) + k_1] = value_0;\n        k_1 = k_1 + int(1);\n    }\n    i_0 = i_0 + int(1);\n}\nthread array<float, int(9)> gradC_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_1 = int(0);\n\n    for(;;)\n    {\n        if(k_1 < int(3))\n        {\n        }\n        else\n        {\n            break;\n        }\n        k_0 = int(0);\n        value_0 = 0.0;\n\n        for(;;)\n        {\n            if(k_0 < int(3))\n            {\n            }\n            else\n            {\n                break;\n            }\n            float v_1 = value_0 + tmpA_0[i_0 * int(3) + k_0] * b_0[k_0 * int(3) + k_1];\n            k_0 = k_0 + int(1);\n            value_0 = v_1;\n        }\n\n        gradC_0[i_0 * int(3) + k_1] = value_0;\n        k_1 = k_1 + int(1);\n    }\n    i_0 = i_0 + int(1);\n}\nthread array<float, int(9)> ct_0;\nct_0[int(0)] = c_0[int(0)];\nct_0[int(1)] = c_0[int(3)];\nct_0[int(2)] = c_0[int(6)];\nct_0[int(3)] = c_0[int(1)];\nct_0[int(4)] = c_0[int(4)];\nct_0[int(5)] = c_0[int(7)];\nct_0[int(6)] = c_0[int(2)];\nct_0[int(7)] = c_0[int(5)];\nct_0[int(8)] = c_0[int(8)];\n\nthread array<float, int(9)> bct_0;\nthread array<float, int(9)> bc_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_1 = int(0);\n\n    for(;;)\n    {\n        if(k_1 < int(3))\n        {\n        }\n        else\n        {\n            break;\n        }\n        k_0 = int(0);\n        value_0 = 0.0;\n        g_0 = 0.0;\n\n        for(;;)\n        {\n            if(k_0 < int(3))\n            {\n            }\n            else\n            {\n                break;\n            }\n            int _S60 = k_0 * int(3) + k_1;\n            float v1_0 = value_0 + b_0[i_0 * int(3) + k_0] * ct_0[_S60];\n            float v2_0 = g_0 + b_0[i_0 * int(3) + k_0] * c_0[_S60];\n            k_0 = k_0 + int(1);\n            value_0 = v1_0;\n            g_0 = v2_0;\n        }\n        int _S61 = i_0 * int(3) + k_1;\n        bct_0[_S61] = value_0;\n        bc_0[_S61] = g_0;\n        k_1 = k_1 + int(1);\n    }\n    i_0 = i_0 + int(1);\n}\nthread array<float, int(9)> cotMt_0;\ncotMt_0[int(0)] = cotM_0[int(0)];\ncotMt_0[int(1)] = cotM_0[int(3)];\ncotMt_0[int(2)] = cotM_0[int(6)];\ncotMt_0[int(3)] = cotM_0[int(1)];\ncotMt_0[int(4)] = cotM_0[int(4)];\ncotMt_0[int(5)] = cotM_0[int(7)];\ncotMt_0[int(6)] = cotM_0[int(2)];\ncotMt_0[int(7)] = cotM_0[int(5)];\ncotMt_0[int(8)] = cotM_0[int(8)];\n\nthread array<float, int(9)> term1_0;\nthread array<float, int(9)> term2_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_1 = int(0);\n\n    for(;;)\n    {\n        if(k_1 < int(3))\n        {\n        }\n        else\n        {\n            break;\n        }\n        k_0 = int(0);\n        value_0 = 0.0;\n        g_0 = 0.0;\n\n        for(;;)\n        {\n            if(k_0 < int(3))\n            {\n            }\n            else\n            {\n                break;\n            }\n            int _S62 = i_0 * int(3) + k_0;\n            int _S63 = k_0 * int(3) + k_1;\n            float v1_1 = value_0 + cotM_0[_S62] * bct_0[_S63];\n            float v2_1 = g_0 + cotMt_0[_S62] * bc_0[_S63];\n            k_0 = k_0 + int(1);\n            value_0 = v1_1;\n            g_0 = v2_1;\n        }\n        int _S64 = i_0 * int(3) + k_1;\n        term1_0[_S64] = value_0;\n        term2_0[_S64] = g_0;\n        k_1 = k_1 + int(1);\n    }\n    i_0 = i_0 + int(1);\n}\nthread array<float, int(9)> gradB_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(9))\n    {\n    }\n    else\n    {\n        break;\n    }\n    gradB_0[i_0] = term1_0[i_0] + term2_0[i_0];\n    i_0 = i_0 + int(1);\n}\nthread array<float, int(9)> wt_0;\nwt_0[int(0)] = a00_1;\nwt_0[int(1)] = a01_1;\nwt_0[int(2)] = a02_1;\nwt_0[int(3)] = a10_1;\nwt_0[int(4)] = a11_1;\nwt_0[int(5)] = a12_1;\nwt_0[int(6)] = a20_1;\nwt_0[int(7)] = a21_1;\nwt_0[int(8)] = a22_1;\n\nthread array<float, int(9)> gradJ_0;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(3))\n    {\n    }\n    else\n    {\n        break;\n    }\n    k_1 = int(0);\n\n    for(;;)\n    {\n        if(k_1 < int(3))\n        {\n        }\n        else\n        {\n            break;\n        }\n        k_0 = int(0);\n        value_0 = 0.0;\n\n        for(;;)\n        {\n            if(k_0 < int(3))\n            {\n            }\n            else\n            {\n                break;\n            }\n            float v_2 = value_0 + gradB_0[i_0 * int(3) + k_0] * wt_0[k_0 * int(3) + k_1];\n            k_0 = k_0 + int(1);\n            value_0 = v_2;\n        }\n\n        gradJ_0[i_0 * int(3) + k_1] = value_0;\n        k_1 = k_1 + int(1);\n    }\n    i_0 = i_0 + int(1);\n}\nfloat invTz2_0 = 1.0 / _S53;\nfloat invTz3_0 = invTz2_0 / t2_1;\nfloat gTx_0 = gradJ_0[int(2)] * (- fused_bwd_focalX_1[int(0)] * invTz2_0);\nfloat gTy_0 = gradJ_0[int(5)] * (- fused_bwd_focalY_1[int(0)] * invTz2_0);\nfloat gTz_0 = gradJ_0[int(0)] * (- fused_bwd_focalX_1[int(0)] * invTz2_0) + gradJ_0[int(4)] * (- fused_bwd_focalY_1[int(0)] * invTz2_0) + gradJ_0[int(2)] * (2.0 * fused_bwd_focalX_1[int(0)] * tx_0 * invTz3_0) + gradJ_0[int(5)] * (2.0 * fused_bwd_focalY_1[int(0)] * ty_0 * invTz3_0);\n\nfloat gT0_0 = gTx_0 * (t2_1 / clipX_0);\nfloat gT1_0 = gTy_0 * (t2_1 / clipY_0);\nfloat gUx_0 = gTx_0 * t0_0;\nfloat gUy_0 = gTy_0 * t1_0;\nbool _S65;\n\nif(t2_1 > minX_0)\n{\n    _S65 = t2_1 < maxX_0;\n}\nelse\n{\n    _S65 = false;\n}\nif(_S65)\n{\n    value_0 = 1.0;\n}\nelse\n{\n    value_0 = 0.0;\n}\nif(t2_1 > minY_0)\n{\n    _S65 = t2_1 < maxY_0;\n}\nelse\n{\n    _S65 = false;\n}\nif(_S65)\n{\n    g_0 = 1.0;\n}\nelse\n{\n    g_0 = 0.0;\n}\n\nfloat gTz_1 = gTz_0 + (gUx_0 * ((clipX_0 - t2_1 * value_0) / (clipX_0 * clipX_0)) + gUy_0 * ((clipY_0 - t2_1 * g_0) / (clipY_0 * clipY_0)));\n\nfloat covGradY_0 = gT0_0 * a10_1 + gT1_0 * a11_1 + gTz_1 * a12_1;\nfloat covGradZ_0 = gT0_0 * a20_1 + gT1_0 * a21_1 + gTz_1 * a22_1;\n\n*(fused_bwd_gradMeans3dScreen_1+meansBase_0) = colorGradX_0 + (gT0_0 * a00_1 + gT1_0 * a01_1 + gTz_1 * a02_1);\n*(fused_bwd_gradMeans3dScreen_1+_S14) = colorGradY_0 + covGradY_0;\n*(fused_bwd_gradMeans3dScreen_1+_S15) = colorGradZ_0 + covGradZ_0;\n\nuint _S66 = p_0 * 9U;\ni_0 = int(0);\nfor(;;)\n{\n    if(i_0 < int(9))\n    {\n    }\n    else\n    {\n        break;\n    }\n    *(fused_bwd_gradCov3d_1+(_S66 + uint(i_0))) = gradC_0[i_0];\n    i_0 = i_0 + int(1);\n}\n*(fused_bwd_gradCameraCenterPoint_1+meansBase_0) = - colorGradX_0;\n*(fused_bwd_gradCameraCenterPoint_1+_S14) = - colorGradY_0;\n*(fused_bwd_gradCameraCenterPoint_1+_S15) = - colorGradZ_0;\n\nuint cotMeansBase_0 = p_0 * 2U;\n*(fused_bwd_gradMeanNdc_1+rotBase_0) = fused_bwd_cotMeans2d_1[cotMeansBase_0] * fused_bwd_imageWidth_1[int(0)] * 0.5;\n\n*(fused_bwd_gradMeanNdc_1+_S41) = fused_bwd_cotMeans2d_1[cotMeansBase_0 + 1U] * fused_bwd_imageHeight_1[int(0)] * 0.5;\n\n*(fused_bwd_gradMeanNdc_1+_S42) = 0.0;\n*(fused_bwd_gradMeanNdc_1+_S43) = 0.0;\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;\nstruct Cov3dValues_0\n{\n    float c00_0;\n    float c01_0;\n    float c02_0;\n    float c10_0;\n    float c11_0;\n    float c12_0;\n    float c20_0;\n    float c21_0;\n    float c22_0;\n};\nCov3dValues_0 buildCov3dFromScaleRotation_0(float sx_0, float sy_0, float sz_0, float rw_0, float rx_0, float ry_0, float rz_0)\n{\n    float _S1 = max(sqrt(rw_0 * rw_0 + rx_0 * rx_0 + ry_0 * ry_0 + rz_0 * rz_0), 9.99999993922529029e-09);\n    float qw_0 = rw_0 / _S1;\n    float qx_0 = rx_0 / _S1;\n    float qy_0 = ry_0 / _S1;\n    float qz_0 = rz_0 / _S1;\n\n    float _S2 = qy_0 * qy_0;\n    float _S3 = qz_0 * qz_0;\n    float _S4 = qx_0 * qy_0;\n    float _S5 = qw_0 * qz_0;\n    float _S6 = qx_0 * qz_0;\n    float _S7 = qw_0 * qy_0;\n\n    float _S8 = qx_0 * qx_0;\n    float _S9 = qy_0 * qz_0;\n    float _S10 = qw_0 * qx_0;\n    float l00_0 = (1.0 - 2.0 * (_S2 + _S3)) * sx_0;\n    float l01_0 = 2.0 * (_S4 - _S5) * sy_0;\n    float l02_0 = 2.0 * (_S6 + _S7) * sz_0;\n    float l10_0 = 2.0 * (_S4 + _S5) * sx_0;\n    float l11_0 = (1.0 - 2.0 * (_S8 + _S3)) * sy_0;\n    float l12_0 = 2.0 * (_S9 - _S10) * sz_0;\n    float l20_0 = 2.0 * (_S6 - _S7) * sx_0;\n    float l21_0 = 2.0 * (_S9 + _S10) * sy_0;\n    float l22_0 = (1.0 - 2.0 * (_S8 + _S2)) * sz_0;\n    thread Cov3dValues_0 outVals_0;\n    (&outVals_0)->c00_0 = l00_0 * l00_0 + l01_0 * l01_0 + l02_0 * l02_0;\n    (&outVals_0)->c01_0 = l00_0 * l10_0 + l01_0 * l11_0 + l02_0 * l12_0;\n    (&outVals_0)->c02_0 = l00_0 * l20_0 + l01_0 * l21_0 + l02_0 * l22_0;\n    (&outVals_0)->c10_0 = l10_0 * l00_0 + l11_0 * l01_0 + l12_0 * l02_0;\n    (&outVals_0)->c11_0 = l10_0 * l10_0 + l11_0 * l11_0 + l12_0 * l12_0;\n    (&outVals_0)->c12_0 = l10_0 * l20_0 + l11_0 * l21_0 + l12_0 * l22_0;\n    (&outVals_0)->c20_0 = l20_0 * l00_0 + l21_0 * l01_0 + l22_0 * l02_0;\n    (&outVals_0)->c21_0 = l20_0 * l10_0 + l21_0 * l11_0 + l22_0 * l12_0;\n    (&outVals_0)->c22_0 = l20_0 * l20_0 + l21_0 * l21_0 + l22_0 * l22_0;\n\n    return outVals_0;\n}\nstruct Cov2dValues_0\n{\n    float c00_1;\n    float c01_1;\n    float c10_1;\n    float c11_1;\n};\nCov2dValues_0 buildCov2dFromCov3d_0(float m0_0, float m1_0, float m2_0, const Cov3dValues_0 thread* cov3d_0, float a00_0, float a01_0, float a02_0, float a10_0, float a11_0, float a12_0, float a20_0, float a21_0, float a22_0, float t30_0, float t31_0, float t32_0, float fovX_0, float fovY_0, float focalX_0, float focalY_0)\n{\n    float t2_0 = m0_0 * a02_0 + m1_0 * a12_0 + m2_0 * a22_0 + t32_0;\n\n    float tanFovX_0 = tan(fovX_0 * 0.5);\n    float tanFovY_0 = tan(fovY_0 * 0.5);\n    float j00_0 = focalX_0 / t2_0;\n    float _S11 = t2_0 * t2_0;\n    float j02_0 = - ((m0_0 * a00_0 + m1_0 * a10_0 + m2_0 * a20_0 + t30_0) / clamp(t2_0, - tanFovX_0 * 1.29999995231628418, tanFovX_0 * 1.29999995231628418) * t2_0) * focalX_0 / _S11;\n    float j11_0 = focalY_0 / t2_0;\n    float j12_0 = - ((m0_0 * a01_0 + m1_0 * a11_0 + m2_0 * a21_0 + t31_0) / clamp(t2_0, - tanFovY_0 * 1.29999995231628418, tanFovY_0 * 1.29999995231628418) * t2_0) * focalY_0 / _S11;\n    float b00_0 = j00_0 * a00_0 + j02_0 * a02_0;\n    float b01_0 = j00_0 * a10_0 + j02_0 * a12_0;\n    float b02_0 = j00_0 * a20_0 + j02_0 * a22_0;\n    float b10_0 = j11_0 * a01_0 + j12_0 * a02_0;\n    float b11_0 = j11_0 * a11_0 + j12_0 * a12_0;\n    float b12_0 = j11_0 * a21_0 + j12_0 * a22_0;\n\n    float t00_0 = b00_0 * cov3d_0->c00_0 + b01_0 * cov3d_0->c10_0 + b02_0 * cov3d_0->c20_0;\n    float t01_0 = b00_0 * cov3d_0->c01_0 + b01_0 * cov3d_0->c11_0 + b02_0 * cov3d_0->c21_0;\n    float t02_0 = b00_0 * cov3d_0->c02_0 + b01_0 * cov3d_0->c12_0 + b02_0 * cov3d_0->c22_0;\n    float t10_0 = b10_0 * cov3d_0->c00_0 + b11_0 * cov3d_0->c10_0 + b12_0 * cov3d_0->c20_0;\n    float t11_0 = b10_0 * cov3d_0->c01_0 + b11_0 * cov3d_0->c11_0 + b12_0 * cov3d_0->c21_0;\n    float t12_0 = b10_0 * cov3d_0->c02_0 + b11_0 * cov3d_0->c12_0 + b12_0 * cov3d_0->c22_0;\n    thread Cov2dValues_0 outVals_1;\n    (&outVals_1)->c00_1 = t00_0 * b00_0 + t01_0 * b01_0 + t02_0 * b02_0 + 0.30000001192092896;\n    (&outVals_1)->c01_1 = t00_0 * b10_0 + t01_0 * b11_0 + t02_0 * b12_0;\n    (&outVals_1)->c10_1 = t10_0 * b00_0 + t11_0 * b01_0 + t12_0 * b02_0;\n    (&outVals_1)->c11_1 = t10_0 * b10_0 + t11_0 * b11_0 + t12_0 * b12_0 + 0.30000001192092896;\n\n    return outVals_1;\n}",
+  "buffer_parameters": [
+    {
+      "name": "fused_bwd_scales_1",
+      "buffer_index": 34,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_rotations_1",
+      "buffer_index": 35,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_means3d_1",
+      "buffer_index": 36,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_shs_1",
+      "buffer_index": 37,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_cameraCenter_1",
+      "buffer_index": 38,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_viewMatrix_1",
+      "buffer_index": 39,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_fovX_1",
+      "buffer_index": 40,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_fovY_1",
+      "buffer_index": 41,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_focalX_1",
+      "buffer_index": 42,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_focalY_1",
+      "buffer_index": 43,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_imageWidth_1",
+      "buffer_index": 44,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_imageHeight_1",
+      "buffer_index": 45,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_cotMeans2d_1",
+      "buffer_index": 46,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_cotCov2d_1",
+      "buffer_index": 47,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_cotColor_1",
+      "buffer_index": 48,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_cotConic_1",
+      "buffer_index": 49,
+      "role": "input",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_counts_1",
+      "buffer_index": 50,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "fused_bwd_gradMeanNdc_1",
+      "buffer_index": 51,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_gradMeans3dScreen_1",
+      "buffer_index": 52,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_gradShs_1",
+      "buffer_index": 53,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_gradCov3d_1",
+      "buffer_index": 54,
+      "role": "output",
+      "type": "float device*"
+    },
+    {
+      "name": "fused_bwd_gradCameraCenterPoint_1",
+      "buffer_index": 55,
+      "role": "output",
+      "type": "float device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_projection/gaussian_projection_screen_fused_backward_mlx.swift"
+}
