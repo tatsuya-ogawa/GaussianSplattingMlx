@@ -416,6 +416,15 @@ RWStructuredBuffer<float> gtf_outDepth; // [pixelCount]
 RWStructuredBuffer<float> gtf_outAlpha; // [pixelCount]
 RWStructuredBuffer<uint> gtf_outLastContrib; // [pixelCount]
 
+struct TileGlobalBlendStepOutputs : IDifferentiable
+{
+    float colorX;
+    float colorY;
+    float colorZ;
+    float depth;
+    float alphaAcc;
+};
+
 [Differentiable]
 float tileGlobalAlphaFromGaussian(
     float meanX,
@@ -435,6 +444,26 @@ float tileGlobalAlphaFromGaussian(
     float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
     float raw = exp(exponent) * opacity;
     return raw > 0.99 ? 0.99 : raw;
+}
+
+[Differentiable]
+TileGlobalBlendStepOutputs tileGlobalBlendStep(
+    float T_i,
+    float alpha,
+    float colorX,
+    float colorY,
+    float colorZ,
+    float depth
+)
+{
+    float contrib = T_i * alpha;
+    TileGlobalBlendStepOutputs outVals;
+    outVals.colorX = contrib * colorX;
+    outVals.colorY = contrib * colorY;
+    outVals.colorZ = contrib * colorZ;
+    outVals.depth = contrib * depth;
+    outVals.alphaAcc = contrib;
+    return outVals;
 }
 
 [shader("compute")]
@@ -508,12 +537,19 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
             py
         );
 
-        float contrib = T * alpha;
-        accAlpha += contrib;
-        accumColorX += contrib * colorX;
-        accumColorY += contrib * colorY;
-        accumColorZ += contrib * colorZ;
-        accumDepth += contrib * depth;
+        TileGlobalBlendStepOutputs stepVals = tileGlobalBlendStep(
+            T,
+            alpha,
+            colorX,
+            colorY,
+            colorZ,
+            depth
+        );
+        accAlpha += stepVals.alphaAcc;
+        accumColorX += stepVals.colorX;
+        accumColorY += stepVals.colorY;
+        accumColorZ += stepVals.colorZ;
+        accumDepth += stepVals.depth;
         T *= (1.0 - alpha);
         if (T < 1e-4)
         {
@@ -697,18 +733,41 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 // Recover transmittance before this gaussian
                 float T_i = T / denom;
                 float contrib = T_i * alpha;
-
-                float cVal = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha + whiteTerm;
-                float gradAlpha = cVal * T_i - suffix / denom;
+                float cotAlphaAcc = gAlpha + whiteTerm;
+                float cVal = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + cotAlphaAcc;
+                float suffixBefore = suffix;
 
                 // Accumulate suffix for next (earlier) gaussian
                 suffix += cVal * contrib;
                 T = T_i;
 
-                g_depth = gDepth * contrib;
-                g_colorX = gColorX * contrib;
-                g_colorY = gColorY * contrib;
-                g_colorZ = gColorZ * contrib;
+                DifferentialPair<float> dpTi = diffPair(T_i, 0.0);
+                DifferentialPair<float> dpAlpha = diffPair(alpha, 0.0);
+                DifferentialPair<float> dpColorX = diffPair(colorX, g_colorX);
+                DifferentialPair<float> dpColorY = diffPair(colorY, g_colorY);
+                DifferentialPair<float> dpColorZ = diffPair(colorZ, g_colorZ);
+                DifferentialPair<float> dpDepth = diffPair(depth, g_depth);
+                TileGlobalBlendStepOutputs cotBlend;
+                cotBlend.colorX = gColorX;
+                cotBlend.colorY = gColorY;
+                cotBlend.colorZ = gColorZ;
+                cotBlend.depth = gDepth;
+                cotBlend.alphaAcc = cotAlphaAcc;
+                bwd_diff(tileGlobalBlendStep)(
+                    dpTi,
+                    dpAlpha,
+                    dpColorX,
+                    dpColorY,
+                    dpColorZ,
+                    dpDepth,
+                    cotBlend
+                );
+                g_colorX = dpColorX.d;
+                g_colorY = dpColorY.d;
+                g_colorZ = dpColorZ.d;
+                g_depth = dpDepth.d;
+
+                float gradAlpha = dpAlpha.d - suffixBefore / denom;
 
                 // Hybrid AD: keep tile-level reverse traversal/reduction handwritten,
                 // and let AD differentiate the per-gaussian alpha math.
