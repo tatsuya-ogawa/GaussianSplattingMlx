@@ -416,6 +416,27 @@ RWStructuredBuffer<float> gtf_outDepth; // [pixelCount]
 RWStructuredBuffer<float> gtf_outAlpha; // [pixelCount]
 RWStructuredBuffer<uint> gtf_outLastContrib; // [pixelCount]
 
+[Differentiable]
+float tileGlobalAlphaFromGaussian(
+    float meanX,
+    float meanY,
+    float c00,
+    float c01,
+    float c10,
+    float c11,
+    float opacity,
+    no_diff float px,
+    no_diff float py
+)
+{
+    float dx = px - meanX;
+    float dy = py - meanY;
+    float dxdy = dx * dy;
+    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
+    float raw = exp(exponent) * opacity;
+    return raw > 0.99 ? 0.99 : raw;
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
@@ -475,12 +496,17 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
         float opacity = gtf_packedGaussians[gBase + 9];
         float depth = gtf_packedGaussians[gBase + 10];
 
-        float dx = px - meanX;
-        float dy = py - meanY;
-        float dxdy = dx * dy;
-        float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-        float raw = exp(exponent) * opacity;
-        float alpha = raw > 0.99 ? 0.99 : raw;
+        float alpha = tileGlobalAlphaFromGaussian(
+            meanX,
+            meanY,
+            c00,
+            c01,
+            c10,
+            c11,
+            opacity,
+            px,
+            py
+        );
 
         float contrib = T * alpha;
         accAlpha += contrib;
@@ -651,14 +677,19 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 float colorX = sgColorX[local];
                 float colorY = sgColorY[local];
                 float colorZ = sgColorZ[local];
+                float opacity = sgOpacity[local];
                 float depth = sgDepth[local];
-                float dx = px - meanX;
-                float dy = py - meanY;
-                float dxdy = dx * dy;
-                float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-                float expVal = exp(exponent);
-                float raw = expVal * sgOpacity[local];
-                float alpha = raw > 0.99 ? 0.99 : raw;
+                float alpha = tileGlobalAlphaFromGaussian(
+                    meanX,
+                    meanY,
+                    c00,
+                    c01,
+                    c10,
+                    c11,
+                    opacity,
+                    px,
+                    py
+                );
 
                 float denom = 1.0 - alpha;
                 if (denom < 1e-6) { denom = 1e-6; }
@@ -679,20 +710,35 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 g_colorY = gColorY * contrib;
                 g_colorZ = gColorZ * contrib;
 
-                if (raw <= 0.99)
-                {
-                    g_opacity = gradAlpha * expVal;
-                    float gradExponent = gradAlpha * raw;
-                    g_c00 = gradExponent * (-0.5 * dx * dx);
-                    float gradOffDiag = gradExponent * (-0.5 * dxdy);
-                    g_c01 = gradOffDiag;
-                    g_c10 = gradOffDiag;
-                    g_c11 = gradExponent * (-0.5 * dy * dy);
-                    float c01sum = c01 + c10;
-                    float gradDy = gradExponent * (-dy * c11 - 0.5 * dx * c01sum);
-                    g_meanX = -(gradExponent * (-dx * c00 - 0.5 * dy * c01sum));
-                    g_meanY = -gradDy;
-                }
+                // Hybrid AD: keep tile-level reverse traversal/reduction handwritten,
+                // and let AD differentiate the per-gaussian alpha math.
+                DifferentialPair<float> dpMeanX = diffPair(meanX, g_meanX);
+                DifferentialPair<float> dpMeanY = diffPair(meanY, g_meanY);
+                DifferentialPair<float> dpC00 = diffPair(c00, g_c00);
+                DifferentialPair<float> dpC01 = diffPair(c01, g_c01);
+                DifferentialPair<float> dpC10 = diffPair(c10, g_c10);
+                DifferentialPair<float> dpC11 = diffPair(c11, g_c11);
+                DifferentialPair<float> dpOpacity = diffPair(opacity, g_opacity);
+                bwd_diff(tileGlobalAlphaFromGaussian)(
+                    dpMeanX,
+                    dpMeanY,
+                    dpC00,
+                    dpC01,
+                    dpC10,
+                    dpC11,
+                    dpOpacity,
+                    px,
+                    py,
+                    gradAlpha
+                );
+
+                g_meanX = dpMeanX.d;
+                g_meanY = dpMeanY.d;
+                g_c00 = dpC00.d;
+                g_c01 = dpC01.d;
+                g_c10 = dpC10.d;
+                g_c11 = dpC11.d;
+                g_opacity = dpOpacity.d;
             }
 
             // SIMD group reduction: sum gradients across 32 threads
