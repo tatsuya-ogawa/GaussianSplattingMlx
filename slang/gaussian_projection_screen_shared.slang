@@ -1,16 +1,3 @@
-struct ProjectionValues
-{
-    float ndc0;
-    float ndc1;
-    float ndc2;
-    float ndc3;
-    float pv0;
-    float pv1;
-    float pv2;
-    float pv3;
-    float visibleMask;
-};
-
 struct ProjectionNdcOutputs : IDifferentiable
 {
     float4 meanNdc;
@@ -60,44 +47,6 @@ Cov3dValues zeroCov3d()
     outVals.c20 = 0.0;
     outVals.c21 = 0.0;
     outVals.c22 = 0.0;
-    return outVals;
-}
-
-Cov2dValues addCov2d(Cov2dValues a, Cov2dValues b)
-{
-    Cov2dValues outVals;
-    outVals.c00 = a.c00 + b.c00;
-    outVals.c01 = a.c01 + b.c01;
-    outVals.c10 = a.c10 + b.c10;
-    outVals.c11 = a.c11 + b.c11;
-    return outVals;
-}
-
-ProjectionValues projectFromHomogeneous(
-    float pv0,
-    float pv1,
-    float pv2,
-    float pv3,
-    float pc0,
-    float pc1,
-    float pc2,
-    float pc3
-)
-{
-    ProjectionValues outVals;
-
-    float wInv = 1.0f / (pc3 + 0.000001f);
-
-    outVals.ndc0 = pc0 * wInv;
-    outVals.ndc1 = pc1 * wInv;
-    outVals.ndc2 = pc2 * wInv;
-    outVals.ndc3 = pc3 * wInv;
-    outVals.pv0 = pv0;
-    outVals.pv1 = pv1;
-    outVals.pv2 = pv2;
-    outVals.pv3 = pv3;
-    outVals.visibleMask = (pv2 >= 0.2f) ? 1.0f : 0.0f;
-
     return outVals;
 }
 
