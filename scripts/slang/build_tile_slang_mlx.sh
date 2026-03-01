@@ -7,13 +7,19 @@ if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
 fi
 
-BUNDLE_DIR="${2:-$ROOT_DIR/GaussianSplattingMlx/Slang}"
-if [[ "$BUNDLE_DIR" != /* ]]; then
+# Legacy per-tile kernels are currently unused by runtime path.
+# To avoid regenerating unused bundle JSON by default, only copy when explicitly requested.
+BUNDLE_DIR="${2:-}"
+if [[ -n "$BUNDLE_DIR" && "$BUNDLE_DIR" != /* ]]; then
   BUNDLE_DIR="$ROOT_DIR/$BUNDLE_DIR"
 fi
 
 SLANG_SRC="$ROOT_DIR/slang/gaussian_tile_kernels.slang"
 CONVERTER="$ROOT_DIR/scripts/slang/convert_slang_metal_to_mlx.py"
+DOCKERFILE_PATH="$ROOT_DIR/scripts/slang/Dockerfile"
+if [[ ! -f "$DOCKERFILE_PATH" && -f "$ROOT_DIR/slang/Dockerfile" ]]; then
+  DOCKERFILE_PATH="$ROOT_DIR/slang/Dockerfile"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -31,6 +37,12 @@ if command -v slangc >/dev/null 2>&1; then
   SLANG_SRC_ARG="$SLANG_SRC"
   OUT_DIR_ARG="$OUT_DIR"
 elif docker image inspect slang-slang >/dev/null 2>&1; then
+  SLANGC_CMD=(docker run --rm -v "$ROOT_DIR:/work" -w /work slang-slang slangc)
+  SLANG_SRC_ARG="/work/slang/gaussian_tile_kernels.slang"
+  OUT_DIR_ARG="/work/$OUT_DIR_REL"
+elif [[ -f "$DOCKERFILE_PATH" ]] && command -v docker >/dev/null 2>&1; then
+  echo "[slang-tile] building docker image slang-slang from $DOCKERFILE_PATH"
+  docker build -t slang-slang -f "$DOCKERFILE_PATH" "$ROOT_DIR" >/dev/null
   SLANGC_CMD=(docker run --rm -v "$ROOT_DIR:/work" -w /work slang-slang slangc)
   SLANG_SRC_ARG="/work/slang/gaussian_tile_kernels.slang"
   OUT_DIR_ARG="/work/$OUT_DIR_REL"
@@ -80,8 +92,14 @@ for entry in "${entries[@]}"; do
     "${atomic_outputs[@]}"
 done
 
-mkdir -p "$BUNDLE_DIR"
-cp "$OUT_DIR"/*_mlx.json "$BUNDLE_DIR/"
-
-echo "[slang-tile] done"
-echo "[slang-tile] generated JSON copied to: $BUNDLE_DIR"
+if [[ -n "$BUNDLE_DIR" ]]; then
+  mkdir -p "$BUNDLE_DIR"
+  for entry in "${entries[@]}"; do
+    cp "$OUT_DIR/${entry}_mlx.json" "$BUNDLE_DIR/"
+  done
+  echo "[slang-tile] done"
+  echo "[slang-tile] generated JSON copied to: $BUNDLE_DIR"
+else
+  echo "[slang-tile] done"
+  echo "[slang-tile] bundle copy skipped (pass BUNDLE_DIR as 2nd arg to copy)."
+fi

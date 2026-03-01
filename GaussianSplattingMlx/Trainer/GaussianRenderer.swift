@@ -246,156 +246,15 @@ class GaussianRenderer {
     private static let fusedRadixSortThreadCount = 128
 
     private lazy var fusedRadixSortTileKeysKernel: MLXFast.MLXFastKernel = {
-        if let slangKernel = try? SlangKernelSpecLoader.loadKernel(
-            named: "radix_sort_tile_keys_fused_forward_mlx"
-        ) {
-            return slangKernel
+        guard
+            let slangKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "radix_sort_tile_keys_fused_forward_mlx")
+        else {
+            fatalError(
+                "Required Slang kernel `radix_sort_tile_keys_fused_forward_mlx` is unavailable."
+            )
         }
-        Logger.shared.debug(
-            "radix_sort_tile_keys_fused_forward_mlx unavailable. Falling back to inline Metal kernel.")
-        return MLXFast.metalKernel(
-            name: "radix_sort_tile_keys_fused_u32_v1",
-            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "counts"],
-            outputNames: [
-                "sortedKeysHigh", "sortedKeysLow", "sortedValues",
-                "scratchKeysHigh", "scratchKeysLow", "scratchValues",
-            ],
-            source: """
-                const uint THREADS = 128u;
-                const uint RADIX_BITS = 4u;
-                const uint RADIX = 16u;
-                const uint LOW_PASSES = 8u; // 32 bits / 4 bits.
-
-                uint lane = thread_position_in_threadgroup.x;
-                if (lane >= THREADS) {
-                    return;
-                }
-
-                uint n = counts[0];
-                if (n == 0) {
-                    return;
-                }
-
-                uint chunk = (n + THREADS - 1u) / THREADS;
-                uint start = lane * chunk;
-                uint end = min(start + chunk, n);
-
-                uint highBits = counts[1];
-                uint highPasses = (highBits + RADIX_BITS - 1u) / RADIX_BITS;
-                if (highPasses < 1u) {
-                    highPasses = 1u;
-                }
-                uint totalPasses = LOW_PASSES + highPasses;
-
-                threadgroup uint localHist[2048];
-                threadgroup uint threadBase[2048];
-
-                bool writeToScratch = true;
-
-                for (uint pass = 0u; pass < totalPasses; ++pass) {
-                    uint localBase = lane * RADIX;
-                    for (uint d = 0u; d < RADIX; ++d) {
-                        localHist[localBase + d] = 0u;
-                    }
-                    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-                    for (uint i = start; i < end; ++i) {
-                        uint keyHigh;
-                        uint keyLow;
-                        if (pass == 0u) {
-                            keyHigh = keysHighIn[i];
-                            keyLow = keysLowIn[i];
-                        } else if (writeToScratch) {
-                            keyHigh = sortedKeysHigh[i];
-                            keyLow = sortedKeysLow[i];
-                        } else {
-                            keyHigh = scratchKeysHigh[i];
-                            keyLow = scratchKeysLow[i];
-                        }
-
-                        uint digit;
-                        if (pass < LOW_PASSES) {
-                            digit = (keyLow >> (pass * RADIX_BITS)) & (RADIX - 1u);
-                        } else {
-                            uint hiPass = pass - LOW_PASSES;
-                            digit = (keyHigh >> (hiPass * RADIX_BITS)) & (RADIX - 1u);
-                        }
-                        localHist[localBase + digit] += 1u;
-                    }
-                    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-                    if (lane == 0u) {
-                        uint running = 0u;
-                        for (uint d = 0u; d < RADIX; ++d) {
-                            uint offset = running;
-                            for (uint t = 0u; t < THREADS; ++t) {
-                                uint idx = t * RADIX + d;
-                                threadBase[idx] = offset;
-                                offset += localHist[idx];
-                            }
-                            running = offset;
-                        }
-                    }
-                    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-                    uint localOffsets[16];
-                    for (uint d = 0u; d < RADIX; ++d) {
-                        localOffsets[d] = 0u;
-                    }
-
-                    for (uint i = start; i < end; ++i) {
-                        uint keyHigh;
-                        uint keyLow;
-                        uint value;
-                        if (pass == 0u) {
-                            keyHigh = keysHighIn[i];
-                            keyLow = keysLowIn[i];
-                            value = valuesIn[i];
-                        } else if (writeToScratch) {
-                            keyHigh = sortedKeysHigh[i];
-                            keyLow = sortedKeysLow[i];
-                            value = sortedValues[i];
-                        } else {
-                            keyHigh = scratchKeysHigh[i];
-                            keyLow = scratchKeysLow[i];
-                            value = scratchValues[i];
-                        }
-
-                        uint digit;
-                        if (pass < LOW_PASSES) {
-                            digit = (keyLow >> (pass * RADIX_BITS)) & (RADIX - 1u);
-                        } else {
-                            uint hiPass = pass - LOW_PASSES;
-                            digit = (keyHigh >> (hiPass * RADIX_BITS)) & (RADIX - 1u);
-                        }
-
-                        uint dst = threadBase[localBase + digit] + localOffsets[digit];
-                        localOffsets[digit] += 1u;
-
-                        if (writeToScratch) {
-                            scratchKeysHigh[dst] = keyHigh;
-                            scratchKeysLow[dst] = keyLow;
-                            scratchValues[dst] = value;
-                        } else {
-                            sortedKeysHigh[dst] = keyHigh;
-                            sortedKeysLow[dst] = keyLow;
-                            sortedValues[dst] = value;
-                        }
-                    }
-                    threadgroup_barrier(mem_flags::mem_threadgroup);
-                    writeToScratch = !writeToScratch;
-                }
-
-                // If pass count is odd, final result lives in scratch; copy it out.
-                if (!writeToScratch) {
-                    for (uint i = start; i < end; ++i) {
-                        sortedKeysHigh[i] = scratchKeysHigh[i];
-                        sortedKeysLow[i] = scratchKeysLow[i];
-                        sortedValues[i] = scratchValues[i];
-                    }
-                }
-                """
-        )
+        return slangKernel
     }()
 
     private func radixSortTileKeys(
@@ -688,22 +547,12 @@ class GaussianRenderer {
         guard
             let fusedForwardKernel = try? SlangKernelSpecLoader.loadKernel(
                 named: "gaussian_projection_screen_fused_forward_mlx"),
-            let projectionForwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "projection_ndc_forward_mlx"),
+            let fusedBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
+                named: "gaussian_projection_screen_fused_backward_mlx"),
             let projectionBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
                 named: "projection_ndc_backward_mlx"),
-            let cov3dForwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_cov3d_forward_mlx"),
             let cov3dBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_cov3d_backward_mlx"),
-            let colorBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_color_backward_mlx"),
-            let covForwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_cov2d_forward_mlx"),
-            let covBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_cov2d_backward_mlx"),
-            let inverseBackwardKernel = try? SlangKernelSpecLoader.loadKernel(
-                named: "gaussian_screen_inverse2d_backward_mlx")
+                named: "gaussian_screen_cov3d_backward_mlx")
         else {
             Logger.shared.debug(
                 "projection+screen fused kernel unavailable. fallback path is used.")
@@ -785,14 +634,9 @@ class GaussianRenderer {
                         let result = Self._projectionScreenFusedVJP(
                             primals: primals,
                             cotangents: cotangents,
-                            projectionForwardKernel: projectionForwardKernel,
+                            fusedBackwardKernel: fusedBackwardKernel,
                             projectionBackwardKernel: projectionBackwardKernel,
-                            cov3dForwardKernel: cov3dForwardKernel,
                             cov3dBackwardKernel: cov3dBackwardKernel,
-                            colorBackwardKernel: colorBackwardKernel,
-                            covForwardKernel: covForwardKernel,
-                            covBackwardKernel: covBackwardKernel,
-                            inverseBackwardKernel: inverseBackwardKernel,
                             activeShDegree: activeShDegree
                         )
                         eval(result)
@@ -802,14 +646,9 @@ class GaussianRenderer {
                 return Self._projectionScreenFusedVJP(
                     primals: primals,
                     cotangents: cotangents,
-                    projectionForwardKernel: projectionForwardKernel,
+                    fusedBackwardKernel: fusedBackwardKernel,
                     projectionBackwardKernel: projectionBackwardKernel,
-                    cov3dForwardKernel: cov3dForwardKernel,
                     cov3dBackwardKernel: cov3dBackwardKernel,
-                    colorBackwardKernel: colorBackwardKernel,
-                    covForwardKernel: covForwardKernel,
-                    covBackwardKernel: covBackwardKernel,
-                    inverseBackwardKernel: inverseBackwardKernel,
                     activeShDegree: activeShDegree
                 )
             }
@@ -818,14 +657,9 @@ class GaussianRenderer {
 
     private static func _projectionScreenFusedVJP(
         primals: [MLXArray], cotangents: [MLXArray],
-        projectionForwardKernel: MLXFast.MLXFastKernel,
+        fusedBackwardKernel: MLXFast.MLXFastKernel,
         projectionBackwardKernel: MLXFast.MLXFastKernel,
-        cov3dForwardKernel: MLXFast.MLXFastKernel,
         cov3dBackwardKernel: MLXFast.MLXFastKernel,
-        colorBackwardKernel: MLXFast.MLXFastKernel,
-        covForwardKernel: MLXFast.MLXFastKernel,
-        covBackwardKernel: MLXFast.MLXFastKernel,
-        inverseBackwardKernel: MLXFast.MLXFastKernel,
         activeShDegree: Int
     ) -> [MLXArray] {
         let scales = primals[0]
@@ -851,62 +685,76 @@ class GaussianRenderer {
 
         let activeCount = means3d.shape[0]
         let paddedCount = Swift.max(activeCount, screenSpaceCustomMinPointCount)
-
-        let means3dPadded = padFirstDimToAtLeast(means3d, count: paddedCount)
-        let pointCounts = MLXArray([UInt32(paddedCount)])
-        let projectionForward = projectionForwardKernel(
-            [means3dPadded, viewMatrix, projMatrix, pointCounts],
-            grid: (max(paddedCount, 1), 1, 1),
-            threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [[paddedCount, 4], [paddedCount, 4], [paddedCount]],
-            outputDTypes: [means3d.dtype, means3d.dtype, means3d.dtype]
-        )
-        let meanNdc = sliceFirstDim(projectionForward[0], count: activeCount)
-
         let scalesPadded = padFirstDimToAtLeast(scales, count: paddedCount)
         let rotationsPadded = padFirstDimToAtLeast(rotations, count: paddedCount)
-        let cov3dPadded = cov3dForwardKernel(
-            [scalesPadded, rotationsPadded, pointCounts],
+        let means3dPadded = padFirstDimToAtLeast(means3d, count: paddedCount)
+        let shsPadded = padFirstDimToAtLeast(shs, count: paddedCount)
+        let cotMeans2dPadded = padFirstDimToAtLeast(cotMeans2d, count: paddedCount)
+        let cotCov2dPadded = padFirstDimToAtLeast(cotCov2d, count: paddedCount)
+        let cotColorPadded = padFirstDimToAtLeast(cotColor, count: paddedCount)
+        let cotConicPadded = padFirstDimToAtLeast(cotConic, count: paddedCount)
+
+        let fovXKernel = fovX.reshaped([1])
+        let fovYKernel = fovY.reshaped([1])
+        let focalXKernel = focalX.reshaped([1])
+        let focalYKernel = focalY.reshaped([1])
+        let imageWidthKernel = imageWidth.reshaped([1])
+        let imageHeightKernel = imageHeight.reshaped([1])
+
+        let fusedCounts = MLXArray(
+            [UInt32(paddedCount), UInt32(activeShDegree), UInt32(shsPadded.shape[1])]
+        )
+        let fusedBackward = fusedBackwardKernel(
+            [
+                scalesPadded, rotationsPadded, means3dPadded, shsPadded,
+                cameraCenter, viewMatrix,
+                fovXKernel, fovYKernel, focalXKernel, focalYKernel,
+                imageWidthKernel, imageHeightKernel,
+                cotMeans2dPadded, cotCov2dPadded, cotColorPadded, cotConicPadded,
+                fusedCounts,
+            ],
             grid: (max(paddedCount, 1), 1, 1),
             threadGroup: (min(128, max(paddedCount, 1)), 1, 1),
-            outputShapes: [[paddedCount, 3, 3]],
-            outputDTypes: [scales.dtype]
-        )[0]
-        let cov3d = sliceFirstDim(cov3dPadded, count: activeCount)
-
-        let screenGrads = _screenSpaceVJP(
-            primals: [
-                meanNdc, means3d, shs, cov3d,
-                cameraCenter, viewMatrix, fovX, fovY, focalX, focalY, imageWidth, imageHeight,
+            outputShapes: [
+                [paddedCount, 4], means3dPadded.shape, shsPadded.shape,
+                [paddedCount, 3, 3], means3dPadded.shape,
             ],
-            cotangents: [cotMeans2d, cotCov2d, cotColor, cotConic],
-            colorBackwardKernel: colorBackwardKernel,
-            covForwardKernel: covForwardKernel,
-            covBackwardKernel: covBackwardKernel,
-            inverseBackwardKernel: inverseBackwardKernel,
-            activeShDegree: activeShDegree
+            outputDTypes: [
+                means3d.dtype, means3d.dtype, shs.dtype,
+                scales.dtype, means3d.dtype,
+            ],
+            initValue: 0.0
         )
+
+        let gradMeanNdc = sliceFirstDim(fusedBackward[0], count: activeCount)
+        let gradMeans3dScreen = sliceFirstDim(fusedBackward[1], count: activeCount)
+        let gradShs = sliceFirstDim(fusedBackward[2], count: activeCount)
+        let gradCov3d = sliceFirstDim(fusedBackward[3], count: activeCount)
+        let gradCameraCenterPoint = sliceFirstDim(fusedBackward[4], count: activeCount)
 
         let cotPView = MLXArray.zeros([activeCount, 4], dtype: means3d.dtype)
         cotPView[.ellipsis, 2] = cotDepths
         let projectionGrads = _projectionNdcVJP(
             primals: [means3d, viewMatrix, projMatrix],
-            cotangents: [screenGrads[0], cotPView],
+            cotangents: [gradMeanNdc, cotPView],
             backwardKernel: projectionBackwardKernel
         )
 
         let cov3dGrads = _cov3dVJP(
             primals: [scales, rotations],
-            cotangents: [screenGrads[3]],
+            cotangents: [gradCov3d],
             backwardKernel: cov3dBackwardKernel
         )
+
+        let gradCameraCenter =
+            gradCameraCenterPoint.sum(axis: 0).expandedDimensions(axes: [0])
 
         return [
             cov3dGrads[0],  // gradScales
             cov3dGrads[1],  // gradRotations
-            projectionGrads[0] + screenGrads[1],  // gradMeans3d
-            screenGrads[2],  // gradShs
-            screenGrads[4],  // gradCameraCenter
+            projectionGrads[0] + gradMeans3dScreen,  // gradMeans3d
+            gradShs,  // gradShs
+            gradCameraCenter,  // gradCameraCenter
             MLXArray.zeros(viewMatrix.shape, dtype: viewMatrix.dtype),
             MLXArray.zeros(projMatrix.shape, dtype: projMatrix.dtype),
             MLXArray.zeros(fovX.shape, dtype: fovX.dtype),

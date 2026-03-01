@@ -20,49 +20,49 @@
   "buffer_parameters": [
     {
       "name": "gtf_packedGaussians_1",
-      "buffer_index": 24,
+      "buffer_index": 34,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "gtf_packedTileIndices_1",
-      "buffer_index": 25,
+      "buffer_index": 35,
       "role": "input",
       "type": "int device*"
     },
     {
       "name": "gtf_tileCounts_1",
-      "buffer_index": 26,
+      "buffer_index": 36,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "gtf_renderCounts_1",
-      "buffer_index": 27,
+      "buffer_index": 37,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "gtf_outColor_1",
-      "buffer_index": 28,
+      "buffer_index": 38,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "gtf_outDepth_1",
-      "buffer_index": 29,
+      "buffer_index": 39,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "gtf_outAlpha_1",
-      "buffer_index": 30,
+      "buffer_index": 40,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "gtf_outLastContrib_1",
-      "buffer_index": 31,
+      "buffer_index": 41,
       "role": "output",
       "type": "uint device*"
     }
