@@ -234,22 +234,24 @@ StructuredBuffer<float> fused_bwd_means3d;              // [N*3]
 StructuredBuffer<float> fused_bwd_shs;                  // [N*K*3]
 StructuredBuffer<float> fused_bwd_cameraCenter;         // [1*3]
 StructuredBuffer<float> fused_bwd_viewMatrix;           // [16]
+StructuredBuffer<float> fused_bwd_projMatrix;           // [16]
 StructuredBuffer<float> fused_bwd_fovX;                 // [1]
 StructuredBuffer<float> fused_bwd_fovY;                 // [1]
 StructuredBuffer<float> fused_bwd_focalX;               // [1]
 StructuredBuffer<float> fused_bwd_focalY;               // [1]
 StructuredBuffer<float> fused_bwd_imageWidth;           // [1]
 StructuredBuffer<float> fused_bwd_imageHeight;          // [1]
+StructuredBuffer<float> fused_bwd_cotDepths;            // [N]
 StructuredBuffer<float> fused_bwd_cotMeans2d;           // [N*2]
 StructuredBuffer<float> fused_bwd_cotCov2d;             // [N*4]
 StructuredBuffer<float> fused_bwd_cotColor;             // [N*3]
 StructuredBuffer<float> fused_bwd_cotConic;             // [N*4]
 StructuredBuffer<uint>  fused_bwd_counts;               // [pointCount, activeShDegree, shStride]
 
-RWStructuredBuffer<float> fused_bwd_gradMeanNdc;        // [N*4]
-RWStructuredBuffer<float> fused_bwd_gradMeans3dScreen;  // [N*3]
+RWStructuredBuffer<float> fused_bwd_gradScales;         // [N*3]
+RWStructuredBuffer<float> fused_bwd_gradRotations;      // [N*4]
+RWStructuredBuffer<float> fused_bwd_gradMeans3d;        // [N*3]
 RWStructuredBuffer<float> fused_bwd_gradShs;            // [N*K*3]
-RWStructuredBuffer<float> fused_bwd_gradCov3d;          // [N*9]
 RWStructuredBuffer<float> fused_bwd_gradCameraCenterPoint; // [N*3]
 
 [shader("compute")]
@@ -382,6 +384,45 @@ void gaussian_projection_screen_fused_backward(uint3 tid : SV_DispatchThreadID)
         cotOutputs
     );
 
+    float cotDepth = fused_bwd_cotDepths[p];
+    float3 pointDiff = float3(0.0);
+    DifferentialPair<float3> dpPoint = diffPair(means3d, pointDiff);
+    ProjectionNdcOutputs cotProjectionOutputs;
+    cotProjectionOutputs.meanNdc = float4(dpMeanNdc.d.x, dpMeanNdc.d.y, 0.0, 0.0);
+    cotProjectionOutputs.pView = float4(0.0, 0.0, cotDepth, 0.0);
+    bwd_diff(evaluateProjectionNdcOutputs)(
+        dpPoint,
+        fused_bwd_viewMatrix[0], fused_bwd_viewMatrix[1], fused_bwd_viewMatrix[2], fused_bwd_viewMatrix[3],
+        fused_bwd_viewMatrix[4], fused_bwd_viewMatrix[5], fused_bwd_viewMatrix[6], fused_bwd_viewMatrix[7],
+        fused_bwd_viewMatrix[8], fused_bwd_viewMatrix[9], fused_bwd_viewMatrix[10], fused_bwd_viewMatrix[11],
+        fused_bwd_viewMatrix[12], fused_bwd_viewMatrix[13], fused_bwd_viewMatrix[14], fused_bwd_viewMatrix[15],
+        fused_bwd_projMatrix[0], fused_bwd_projMatrix[1], fused_bwd_projMatrix[2], fused_bwd_projMatrix[3],
+        fused_bwd_projMatrix[4], fused_bwd_projMatrix[5], fused_bwd_projMatrix[6], fused_bwd_projMatrix[7],
+        fused_bwd_projMatrix[8], fused_bwd_projMatrix[9], fused_bwd_projMatrix[10], fused_bwd_projMatrix[11],
+        fused_bwd_projMatrix[12], fused_bwd_projMatrix[13], fused_bwd_projMatrix[14], fused_bwd_projMatrix[15],
+        cotProjectionOutputs
+    );
+
+    float sxDiff = 0.0;
+    float syDiff = 0.0;
+    float szDiff = 0.0;
+    float rwDiff = 0.0;
+    float rxDiff = 0.0;
+    float ryDiff = 0.0;
+    float rzDiff = 0.0;
+    DifferentialPair<float> dpSx = diffPair(fused_bwd_scales[scaleBase + 0], sxDiff);
+    DifferentialPair<float> dpSy = diffPair(fused_bwd_scales[scaleBase + 1], syDiff);
+    DifferentialPair<float> dpSz = diffPair(fused_bwd_scales[scaleBase + 2], szDiff);
+    DifferentialPair<float> dpRw = diffPair(fused_bwd_rotations[rotBase + 0], rwDiff);
+    DifferentialPair<float> dpRx = diffPair(fused_bwd_rotations[rotBase + 1], rxDiff);
+    DifferentialPair<float> dpRy = diffPair(fused_bwd_rotations[rotBase + 2], ryDiff);
+    DifferentialPair<float> dpRz = diffPair(fused_bwd_rotations[rotBase + 3], rzDiff);
+    bwd_diff(buildCov3dFromScaleRotation)(
+        dpSx, dpSy, dpSz,
+        dpRw, dpRx, dpRy, dpRz,
+        dpCov3d.d
+    );
+
     for (int k = 0; k < coeffCount; ++k)
     {
         uint shBase = shPointBase + uint(k * 3);
@@ -390,26 +431,18 @@ void gaussian_projection_screen_fused_backward(uint3 tid : SV_DispatchThreadID)
         fused_bwd_gradShs[shBase + 2] = dpShCoeffs.d[k].z;
     }
 
-    uint gradCov3dBase = p * 9;
-    fused_bwd_gradCov3d[gradCov3dBase + 0] = dpCov3d.d.c00;
-    fused_bwd_gradCov3d[gradCov3dBase + 1] = dpCov3d.d.c01;
-    fused_bwd_gradCov3d[gradCov3dBase + 2] = dpCov3d.d.c02;
-    fused_bwd_gradCov3d[gradCov3dBase + 3] = dpCov3d.d.c10;
-    fused_bwd_gradCov3d[gradCov3dBase + 4] = dpCov3d.d.c11;
-    fused_bwd_gradCov3d[gradCov3dBase + 5] = dpCov3d.d.c12;
-    fused_bwd_gradCov3d[gradCov3dBase + 6] = dpCov3d.d.c20;
-    fused_bwd_gradCov3d[gradCov3dBase + 7] = dpCov3d.d.c21;
-    fused_bwd_gradCov3d[gradCov3dBase + 8] = dpCov3d.d.c22;
+    fused_bwd_gradScales[scaleBase + 0] = dpSx.d;
+    fused_bwd_gradScales[scaleBase + 1] = dpSy.d;
+    fused_bwd_gradScales[scaleBase + 2] = dpSz.d;
 
-    uint gradMeanNdcBase = p * 4;
-    fused_bwd_gradMeanNdc[gradMeanNdcBase + 0] = dpMeanNdc.d.x;
-    fused_bwd_gradMeanNdc[gradMeanNdcBase + 1] = dpMeanNdc.d.y;
-    fused_bwd_gradMeanNdc[gradMeanNdcBase + 2] = 0.0;
-    fused_bwd_gradMeanNdc[gradMeanNdcBase + 3] = 0.0;
+    fused_bwd_gradRotations[rotBase + 0] = dpRw.d;
+    fused_bwd_gradRotations[rotBase + 1] = dpRx.d;
+    fused_bwd_gradRotations[rotBase + 2] = dpRy.d;
+    fused_bwd_gradRotations[rotBase + 3] = dpRz.d;
 
-    fused_bwd_gradMeans3dScreen[meansBase + 0] = dpMeans3d.d.x;
-    fused_bwd_gradMeans3dScreen[meansBase + 1] = dpMeans3d.d.y;
-    fused_bwd_gradMeans3dScreen[meansBase + 2] = dpMeans3d.d.z;
+    fused_bwd_gradMeans3d[meansBase + 0] = dpMeans3d.d.x + dpPoint.d.x;
+    fused_bwd_gradMeans3d[meansBase + 1] = dpMeans3d.d.y + dpPoint.d.y;
+    fused_bwd_gradMeans3d[meansBase + 2] = dpMeans3d.d.z + dpPoint.d.z;
 
     fused_bwd_gradCameraCenterPoint[meansBase + 0] = dpCameraCenter.d.x;
     fused_bwd_gradCameraCenterPoint[meansBase + 1] = dpCameraCenter.d.y;

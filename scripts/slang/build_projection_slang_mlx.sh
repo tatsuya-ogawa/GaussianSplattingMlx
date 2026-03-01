@@ -76,8 +76,8 @@ for entry in "${entries[@]}"; do
       output_names="fused_outMeans2d_1,fused_outDepths_1,fused_outColor_1,fused_outCov2d_1,fused_outConic_1,fused_outRadii_1"
       ;;
     gaussian_projection_screen_fused_backward)
-      input_names="fused_bwd_scales_1,fused_bwd_rotations_1,fused_bwd_means3d_1,fused_bwd_shs_1,fused_bwd_cameraCenter_1,fused_bwd_viewMatrix_1,fused_bwd_fovX_1,fused_bwd_fovY_1,fused_bwd_focalX_1,fused_bwd_focalY_1,fused_bwd_imageWidth_1,fused_bwd_imageHeight_1,fused_bwd_cotMeans2d_1,fused_bwd_cotCov2d_1,fused_bwd_cotColor_1,fused_bwd_cotConic_1,fused_bwd_counts_1"
-      output_names="fused_bwd_gradMeanNdc_1,fused_bwd_gradMeans3dScreen_1,fused_bwd_gradShs_1,fused_bwd_gradCov3d_1,fused_bwd_gradCameraCenterPoint_1"
+      input_names="fused_bwd_scales_1,fused_bwd_rotations_1,fused_bwd_means3d_1,fused_bwd_shs_1,fused_bwd_cameraCenter_1,fused_bwd_viewMatrix_1,fused_bwd_projMatrix_1,fused_bwd_fovX_1,fused_bwd_fovY_1,fused_bwd_focalX_1,fused_bwd_focalY_1,fused_bwd_imageWidth_1,fused_bwd_imageHeight_1,fused_bwd_cotDepths_1,fused_bwd_cotMeans2d_1,fused_bwd_cotCov2d_1,fused_bwd_cotColor_1,fused_bwd_cotConic_1,fused_bwd_counts_1"
+      output_names="fused_bwd_gradScales_1,fused_bwd_gradRotations_1,fused_bwd_gradMeans3d_1,fused_bwd_gradShs_1,fused_bwd_gradCameraCenterPoint_1"
       ;;
     *)
       echo "Unknown entry: $entry" >&2
