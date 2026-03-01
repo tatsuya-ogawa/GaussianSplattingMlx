@@ -6,10 +6,9 @@
 //
 // Image layout: NHWC with N=1, so flat [H*W*C].
 // Each channel is processed independently (same as grouped conv with groups=C).
-// Gaussian window: generated in-kernel from K and sigma=1.5.
+// Gaussian window: provided by host as flattened [K*K] buffer.
 
 static const uint SSIM_MAX_K = 32;
-static const float SSIM_SIGMA = 1.5;
 
 struct SsimAccumState : IDifferentiable
 {
@@ -25,6 +24,7 @@ struct SsimAccumState : IDifferentiable
 // ---------------------------------------------------------------------------
 StructuredBuffer<float> ssf_img1;       // [H*W*C]
 StructuredBuffer<float> ssf_img2;       // [H*W*C]
+StructuredBuffer<float> ssf_window;     // [K*K]
 StructuredBuffer<uint>  ssf_params;     // [0]=H, [1]=W, [2]=C, [3]=K
 
 RWStructuredBuffer<float> ssf_outSsim;    // [H*W*C]
@@ -117,23 +117,6 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
     state.sumW1Sq = 0.0;
     state.sumW2Sq = 0.0;
     state.sumW12 = 0.0;
-    float w1d[SSIM_MAX_K];
-    float center = float(K) * 0.5;
-    float invTwoSigmaSq = 1.0 / (2.0 * SSIM_SIGMA * SSIM_SIGMA);
-    float sum1d = 0.0;
-    for (uint i = 0; i < K; ++i)
-    {
-        float dx = float(i) - center;
-        float w = exp(-(dx * dx) * invTwoSigmaSq);
-        w1d[i] = w;
-        sum1d += w;
-    }
-    float invSum1d = 1.0 / max(sum1d, 1e-8);
-    for (uint i = 0; i < K; ++i)
-    {
-        w1d[i] *= invSum1d;
-    }
-
     for (uint ki = 0; ki < K; ki++)
     {
         int src_h = int(h_pos) + int(ki) - int(pad);
@@ -143,7 +126,7 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
             int src_w = int(w_pos) + int(kj) - int(pad);
             if (src_w < 0 || src_w >= int(W)) continue;
 
-            float wt = w1d[ki] * w1d[kj];
+            float wt = ssf_window[ki * K + kj];
             uint srcIdx = uint(src_h) * W * C + uint(src_w) * C + c;
             float v1 = ssf_img1[srcIdx];
             float v2 = ssf_img2[srcIdx];
@@ -184,6 +167,7 @@ void ssim_forward(uint3 tid : SV_DispatchThreadID)
 StructuredBuffer<float> ssb_gradOutput; // [H*W*C]
 StructuredBuffer<float> ssb_img1;       // [H*W*C]
 StructuredBuffer<float> ssb_img2;       // [H*W*C]
+StructuredBuffer<float> ssb_window;     // [K*K]
 StructuredBuffer<float> ssb_mu1;        // [H*W*C]
 StructuredBuffer<float> ssb_mu2;        // [H*W*C]
 StructuredBuffer<float> ssb_sigma1;     // [H*W*C]
@@ -222,23 +206,6 @@ void ssim_backward(uint3 tid : SV_DispatchThreadID)
 
     float grad1 = 0.0;
     float grad2 = 0.0;
-    float w1d[SSIM_MAX_K];
-    float center = float(K) * 0.5;
-    float invTwoSigmaSq = 1.0 / (2.0 * SSIM_SIGMA * SSIM_SIGMA);
-    float sum1d = 0.0;
-    for (uint i = 0; i < K; ++i)
-    {
-        float dx = float(i) - center;
-        float w = exp(-(dx * dx) * invTwoSigmaSq);
-        w1d[i] = w;
-        sum1d += w;
-    }
-    float invSum1d = 1.0 / max(sum1d, 1e-8);
-    for (uint i = 0; i < K; ++i)
-    {
-        w1d[i] *= invSum1d;
-    }
-
     // Iterate over all window centers (cx, cy) whose window contains (h_pos, w_pos)
     for (uint ki = 0; ki < K; ki++)
     {
@@ -249,7 +216,7 @@ void ssim_backward(uint3 tid : SV_DispatchThreadID)
             int cy = int(w_pos) - int(kj) + int(pad);
             if (cy < 0 || cy >= int(W)) continue;
 
-            float wt = w1d[ki] * w1d[kj];
+            float wt = ssb_window[ki * K + kj];
             uint cIdx = uint(cx) * W * C + uint(cy) * C + c;
 
             float upstream = ssb_gradOutput[cIdx];

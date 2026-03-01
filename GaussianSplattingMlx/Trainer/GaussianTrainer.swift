@@ -275,6 +275,8 @@ class GaussianTrainer {
     var gaussRender: GaussianRenderer
     var model: GaussModel
     var lambda_dssim: Float = 0.2
+    private let ssimWindowSize: Int = 11
+    private let ssimWindowSigma: Float = 1.5
     var lambda_depth: Float = 0.0
     var split_and_prune_per_iteration: Int = 100
     var save_snapshot_per_iteration: Int
@@ -303,6 +305,13 @@ class GaussianTrainer {
     
     // Precomputed cameras to avoid ~20 GPU sync points (.item()) per iteration
     private var cachedCameras: [Camera] = []
+    private lazy var cachedSsimWindow: MLXArray = {
+        let g1d = gaussian(windowSize: ssimWindowSize, sigma: ssimWindowSigma)
+        let g2d = g1d.reshaped([ssimWindowSize, 1]).matmul(g1d.reshaped([1, ssimWindowSize]))
+        let window = MLX.contiguous(g2d.reshaped([ssimWindowSize * ssimWindowSize]))
+        eval(window)
+        return window
+    }()
     
     // MARK: - Custom Metal Kernels for split_and_prune
     
@@ -552,8 +561,9 @@ class GaussianTrainer {
             return nil
         }
 
-        // Gaussian window is generated inside Slang kernels (sigma=1.5).
-        let windowSize = 11
+        // Gaussian window is precomputed once on Swift side and reused.
+        let window = self.cachedSsimWindow
+        let windowSize = self.ssimWindowSize
 
         // Saved forward intermediates for backward
         var savedMu1: MLXArray?
@@ -572,7 +582,7 @@ class GaussianTrainer {
             let params = MLXArray([UInt32(H), UInt32(W), UInt32(C), UInt32(windowSize)])
 
             let outputs = forwardKernel(
-                [img1.reshaped([-1]), img2.reshaped([-1]), params],
+                [img1.reshaped([-1]), img2.reshaped([-1]), window, params],
                 grid: (max(totalPixels, 1), 1, 1),
                 threadGroup: (min(256, max(totalPixels, 1)), 1, 1),
                 outputShapes: Array(repeating: [totalPixels], count: 6),
@@ -600,7 +610,7 @@ class GaussianTrainer {
 
                 let grads = backwardKernel(
                     [
-                        gradOutput, img1.reshaped([-1]), img2.reshaped([-1]),
+                        gradOutput, img1.reshaped([-1]), img2.reshaped([-1]), window,
                         savedMu1!, savedMu2!, savedSigma1!, savedSigma2!, savedSigma12!,
                         params,
                     ],
