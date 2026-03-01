@@ -306,6 +306,60 @@ float3 evaluateShColorFromPoint(
     return max(colorAccum, float3(0.0));
 }
 
+struct ProjectionScreenGradOutputs : IDifferentiable
+{
+    float2 means2d;
+    float3 color;
+    Cov2dValues cov2d;
+    float4 conic;
+};
+
+[Differentiable]
+ProjectionScreenGradOutputs evaluateProjectionScreenGradOutputs(
+    float2 meanNdcXY,
+    float3 means3d,
+    float3 cameraCenter,
+    float3 shCoeffs[25],
+    Cov3dValues cov3d,
+    no_diff int degree,
+    no_diff float a00,
+    no_diff float a01,
+    no_diff float a02,
+    no_diff float a10,
+    no_diff float a11,
+    no_diff float a12,
+    no_diff float a20,
+    no_diff float a21,
+    no_diff float a22,
+    no_diff float t30,
+    no_diff float t31,
+    no_diff float t32,
+    no_diff float fovX,
+    no_diff float fovY,
+    no_diff float focalX,
+    no_diff float focalY,
+    no_diff float imageWidth,
+    no_diff float imageHeight
+)
+{
+    ProjectionScreenGradOutputs outVals;
+    outVals.means2d = ndcToScreen(meanNdcXY.x, meanNdcXY.y, imageWidth, imageHeight);
+    outVals.color = evaluateShColorFromPoint(means3d, cameraCenter, shCoeffs, degree);
+    outVals.cov2d = buildCov2dFromCov3d(
+        means3d.x,
+        means3d.y,
+        means3d.z,
+        cov3d,
+        a00, a01, a02,
+        a10, a11, a12,
+        a20, a21, a22,
+        t30, t31, t32,
+        fovX, fovY, focalX, focalY
+    );
+    outVals.conic = inverseCov2d(outVals.cov2d);
+    return outVals;
+}
+
 float computeRadiusFromCov2d(Cov2dValues cov2d)
 {
     float detVal = cov2d.c00 * cov2d.c11 - cov2d.c01 * cov2d.c10;
