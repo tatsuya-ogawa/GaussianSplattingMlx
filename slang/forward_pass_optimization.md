@@ -1,64 +1,150 @@
-# Forward Pass Optimization (Removing `.item()` eval and supporting MLX.compile)
+# Slang Forward/Backward Optimization and Design Principles
 
-## Overview
+## Scope
 
-Within an `MLX.compile` trace, operations that force synchronization with the CPU (eval), such as `.item(Int.self)`, are not supported.
-In the initial implementation, `conditionToIndices` (which internally calls `.item()`) was used within `projection_ndc` to filter visible Gaussians. This optimization completely removes that bottleneck, refactoring the entire Forward pass into an eval-free architecture capable of being compiled.
+This document is the single source of truth for forward/backward design in this repository's Slang path.
 
-## Solution Approach: Integrating Visibility Logic into the Tile Pipeline
+- Projection + Screen-space fused path
+- Tile-global slicing path
+- Tile-global compositing forward/backward path
+- AD usage policy for maintainability and performance
 
-### Core Idea
+The runtime pipeline is:
 
-By completely removing `conditionToIndices` and its dependent `argSort`, the architecture was changed to **pass all $N$ Gaussians directly into the Screen Space kernel as a single batch**.
+`slangc -> metal -> MLX JSON -> Swift CustomFunction (Forward + VJP)`
 
-For Gaussians that are determined to be invisible, their `radii` is forcefully set to 0. This leverages the existing behavior of the downstream tile-based rendering kernels (`count_tiles_per_gaussian` and `generate_keys`), which naturally skips over any Gaussian with a radius of 0.
+## Core Philosophy
 
-### Architecture Comparison
+The codebase follows a hybrid strategy:
 
-#### Before Optimization
-1. Call `conditionToIndices` within `projection_ndc`, which triggers `.item(Int.self)`, retrieving $M$ visible indices.
-2. Use the $M$ indices to gather parameters individually from all arrays.
-3. Call `argSort(depths)` to sort the $M$ indices by depth.
-4. Execute the Screen Space kernel only on the $M$ sorted Gaussians.
+1. Put math in reusable `[Differentiable]` Slang functions.
+2. Keep kernel entry points as thin ABI wrappers.
+3. Hand-write only GPU control flow that AD cannot replace efficiently (reverse traversal, shared-memory staging, wave reduction, atomic accumulation).
 
-#### After Optimization (Current)
-1. `projection_ndc` returns `visibleMask` (a lazy boolean mask) instead of an array of indices.
-2. The Screen Space kernel is executed directly on **all $N$ Gaussians** without any gathering or pre-sorting.
-3. Within the `render()` process, the resulting `visibleMask` is multiplied to forcefully set the calculated `radii` of invisible Gaussians to 0.
-4. Gaussians with `radii = 0` are treated as "0 rendering tiles" within the subsequent `buildGlobalTileSliceInfo` pipeline, naturally excluding them from processing.
-5. Depth sorting is no longer performed by a Swift-level `argSort`. Instead, it is handled inherently by the `radixSort` (the output of the `generateKeys` kernel) just before the tile processing, making the pre-sort entirely unnecessary.
+This gives both:
 
-## Implementation Details and Considerations
+- maintainability (single-source math, less symbolic gradient duplication)
+- performance (explicit scheduling/reduction where required)
 
-### 1. Preventing NaN Errors
-If invisible Gaussians positioned behind the camera (`z < 0.2`) are processed directly by the Screen Space kernel, operations like division by zero can produce `NaN`. To prevent this, a safeguard is included in the Swift side of `projection_ndc` to clamp `p_view.z` to a minimum of `max(0.2, z)`.
-The calculated results (such as 2D coordinates) for these clamped Gaussians will be meaningless, but because they are later discarded via `radii = 0`, they do not affect the final rendered result.
+## Forward Design (Current)
 
-### 2. Deprecation of the `inputIsDepthSorted` Flag
-Since the pre-`argSort` step was eliminated, there is no longer a guarantee that the input data to the rendering function is depth-sorted. As a result, flag conditions like `inputIsDepthSorted` have been removed. The tile information building pipeline is now triggered consistently using only the `globalTileSliceKernelsAvailable` condition.
+### Eval-free forward for compile compatibility
 
-### 3. Remaining `.item()` Calls
-There are a few `.item(Int.self)` calls left inside `buildGlobalTileSliceInfo` used to calculate the total number of tile pairs. However, these are strictly placed within `MLX.stopGradient(...)` blocks (areas excluded from differentiation). Therefore, they do not interfere with `MLX.compile` (the loss calculation/backward pass), ensuring the maximum benefit from compilation during the training loop.
+Forward execution avoids CPU sync points in differentiable paths.
 
-## Trade-offs and Achievements
+- No visibility index gathering via `.item()` in the differentiable projection/screen route.
+- All `N` Gaussians are processed in projection+screen.
+- Invisible splats are suppressed by `radii = 0`, then naturally skipped by tile slicing kernels (`count_tiles_per_gaussian`, `generate_keys`).
 
-| Metric | Before Optimization | After Optimization |
-|---|---|---|
-| Screen Space Target Count | $M$ instances (Visible only) | $N$ instances (All Gaussians) |
-| CPU Syncs (Forward pass) | 1 sync via `conditionToIndices` | **Zero** |
-| `argSort` Calls | Pre-sort executed on $M$ elements | **Unnecessary** (Handled by Tile Kernel) |
-| Memory `gather` Operations | Heavy op on multiple arrays × 2 | **Zero** |
-| **MLX.compile Compatibility** | Impossible (blocked by `.item()`) | **Supported (Accelerated Training)** |
+### Tile slicing and sort strategy
 
-Because the Screen Space kernel now evaluates invisible Gaussians as well, the compute load inside that specific kernel increased by about 10–20%.
-However, the complete elimination of heavy memory gather access and CPU-side sorting, paired crucially with the **enabling of Forward Pass compilation**, has resulted in a dramatic overall improvement to training performance.
+- Tile key generation is done on GPU.
+- Depth ordering is handled by fused radix sort kernel (`radix_sort_tile_keys_fused_forward`), not by Swift `argSort`.
+- Remaining `.item()` usage (for shape/control values) is isolated under `MLX.stopGradient(...)`.
 
-## Current Projection+Screen Fused Rule
+### Numerical safety
 
-To keep forward/backward behavior aligned and maintainable, the `projection+screen` fused path now follows this rule:
+For behind-camera or unstable cases, the projection/screen path applies guards (for example minimum z handling) so invalid intermediates do not propagate into rendered output.
 
-1. Define the core math once as a large shared `[Differentiable]` function.
-2. Reuse that function from the fused forward kernel.
-3. Reuse the same function from fused backward via `bwd_diff(...)` in a thin wrapper kernel.
+## Backward Design (Current)
 
-This removes duplicated SH/covariance/conic logic between forward and backward and keeps fused math as a single source of truth in shared Slang code.
+### AD-centric where practical
+
+For projection+screen fused backward, the policy is:
+
+1. define fused math in shared `[Differentiable]` functions
+2. call those from forward
+3. call `bwd_diff(...)` from a thin backward wrapper
+
+This avoids duplicating large symbolic math between forward and backward.
+
+### Why explicit backward kernels still exist
+
+With current toolchain/runtime constraints, dispatch targets are explicit named kernels from generated MLX JSON. So dedicated backward entry points are still required for VJP wiring.
+
+## Template Architecture for New Differentiable Tile Renderers
+
+To support "new forward variants with minimal new backward code," use this template.
+
+### Layer 1: Differentiable sample/state math
+
+Define small reusable AD functions:
+
+- `evaluateSample(...) -> Sample`
+- `updateState(prevState, sample) -> nextState`
+
+Both should be `[Differentiable]`.
+
+### Layer 2: Reversible state transition
+
+Define:
+
+- `undoState(currentState, sample) -> prevState`
+
+This is not required to be differentiable. It is used to walk backward through the compositing chain.
+
+### Layer 3: Hand-written parallel control
+
+Keep only these parts manual:
+
+- reverse traversal over tile-local sample list
+- `groupshared` cooperative loads
+- `WaveActiveSum` reductions
+- `InterlockedAdd` writes
+
+Do not keep long symbolic gradient algebra here.
+
+### Canonical backward loop pattern
+
+```slang
+sample = evaluateSample(...)
+prevState = undoState(currentState, sample)
+
+// AD through state update
+bwd_diff(updateState)(diffPair(prevState), diffPair(sample), cotCurrentState)
+currentState = prevState
+cotCurrentState = d_prevState
+
+// AD through sample evaluation
+bwd_diff(evaluateSample)(..., d_sample)
+
+// Manual parallel reduction + atomic write
+reduce_and_atomic_add(...)
+```
+
+## Practical Policy: What to Hand-write vs What to AD
+
+Prefer AD for:
+
+- per-sample scalar/vector math
+- per-step compositing state update math
+
+Hand-write for:
+
+- tile scheduling and reverse iteration order
+- shared-memory staging
+- SIMD/wave aggregation
+- atomic write-back topology
+
+## Authoring Checklist (New Variant)
+
+1. Define `Sample` and `PixelState` as `IDifferentiable` structs.
+2. Implement `[Differentiable] evaluateSample(...)`.
+3. Implement `[Differentiable] updateState(prev, sample)`.
+4. Implement `undoState(current, sample)`.
+5. Use `evaluateSample + updateState` in forward loop.
+6. In backward, keep control/reduction manual and use:
+   - `bwd_diff(updateState)`
+   - `bwd_diff(evaluateSample)`
+7. Cache only required forward tensors for VJP (for example output color/depth/alpha and contributor count).
+8. Regenerate JSON via build scripts and verify `xcodebuild`.
+
+## Performance Notes
+
+Historically, the main bottleneck was tile-global backward atomic contention. Performance improved significantly through:
+
+- tile-based dispatch + shared-memory staging
+- wave-level reduction before atomics
+- reverse one-pass backward traversal
+
+The current template preserves those gains while making future renderer variants easier to implement.
