@@ -165,6 +165,7 @@ float2 ndcToScreen(float ndcX, float ndcY, no_diff float imageWidth, no_diff flo
     return float2(sx, sy);
 }
 
+[Differentiable]
 Cov3dValues buildCov3dFromScaleRotation(
     float sx,
     float sy,
