@@ -1,0 +1,90 @@
+{
+  "metal": "build/slang_tile_global/radix_sort_tile_keys_fused_forward.metal",
+  "entry": "radix_sort_tile_keys_fused_forward",
+  "kernel_name": "radix_sort_tile_keys_fused_forward_slang_v1",
+  "kernel_var": "radix_sort_tile_keys_fused_forwardKernel",
+  "input_names": [
+    "rs_keysHighIn_1",
+    "rs_keysLowIn_1",
+    "rs_valuesIn_1",
+    "rs_counts_1"
+  ],
+  "output_names": [
+    "rs_sortedKeysHigh_1",
+    "rs_sortedKeysLow_1",
+    "rs_sortedValues_1",
+    "rs_scratchKeysHigh_1",
+    "rs_scratchKeysLow_1",
+    "rs_scratchValues_1"
+  ],
+  "source": "uint3 tid_0 = thread_position_in_grid;\nuint3 gtid_0 = thread_position_in_threadgroup;\nthreadgroup array<uint, int(2048)> rs_localHist_1;\n\nthreadgroup array<uint, int(2048)> rs_threadBase_1;\n\nuint lane_0 = gtid_0.x;\nuint M_0 = rs_counts_1[int(0)];\nbool writeToScratch_0;\nif(lane_0 >= 128U)\n{\n    writeToScratch_0 = true;\n}\nelse\n{\n    writeToScratch_0 = M_0 == 0U;\n}\nif(writeToScratch_0)\n{\n    return;\n}\n\nuint chunk_0 = (M_0 + 128U - 1U) / 128U;\nuint start_0 = lane_0 * chunk_0;\nuint _S1 = min(start_0 + chunk_0, M_0);\n\nuint highPasses_0 = (rs_counts_1[int(1)] + 4U - 1U) / 4U;\nuint highPasses_1;\nif(highPasses_0 < 1U)\n{\n    highPasses_1 = 1U;\n}\nelse\n{\n    highPasses_1 = highPasses_0;\n}\nuint d_0;\n\nuint _S2 = 8U + highPasses_1;\nwriteToScratch_0 = true;\nuint pass_0 = 0U;\n\nfor(;;)\n{\n    if(pass_0 < _S2)\n    {\n    }\n    else\n    {\n        break;\n    }\n    uint _S3 = lane_0 * 16U;\n    d_0 = 0U;\n    for(;;)\n    {\n        if(d_0 < 16U)\n        {\n        }\n        else\n        {\n            break;\n        }\n        rs_localHist_1[_S3 + d_0] = 0U;\n        d_0 = d_0 + 1U;\n    }\n    uint digit_0;\n    uint keyHigh_0;\n    uint keyLow_0;\n\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n    uint i_0 = start_0;\n\n    for(;;)\n    {\n        if(i_0 < _S1)\n        {\n        }\n        else\n        {\n            break;\n        }\n\n        if(pass_0 == 0U)\n        {\n            uint _S4 = rs_keysHighIn_1[i_0];\n            keyLow_0 = rs_keysLowIn_1[i_0];\n            keyHigh_0 = _S4;\n        }\n        else\n        {\n\n            if(writeToScratch_0)\n            {\n                uint device* _S5 = rs_sortedKeysHigh_1+i_0;\n                keyLow_0 = *(rs_sortedKeysLow_1+i_0);\n                keyHigh_0 = *_S5;\n            }\n            else\n            {\n                uint device* _S6 = rs_scratchKeysHigh_1+i_0;\n                keyLow_0 = *(rs_scratchKeysLow_1+i_0);\n                keyHigh_0 = *_S6;\n            }\n        }\n        if(pass_0 < 8U)\n        {\n            digit_0 = (keyLow_0 >> (pass_0 * 4U)) & 15U;\n        }\n        else\n        {\n            digit_0 = (keyHigh_0 >> ((pass_0 - 8U) * 4U)) & 15U;\n        }\n        rs_localHist_1[_S3 + digit_0] = rs_localHist_1[_S3 + digit_0] + 1U;\n        i_0 = i_0 + 1U;\n    }\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n    uint i_1;\n    uint d_1;\n\n    if(lane_0 == 0U)\n    {\n        i_1 = 0U;\n        d_1 = 0U;\n\n        for(;;)\n        {\n            if(d_1 < 16U)\n            {\n            }\n            else\n            {\n                break;\n            }\n            keyLow_0 = 0U;\n\n            for(;;)\n            {\n                if(keyLow_0 < 128U)\n                {\n                }\n                else\n                {\n                    break;\n                }\n                uint idx_0 = keyLow_0 * 16U + d_1;\n                rs_threadBase_1[idx_0] = i_1;\n                uint offset_0 = i_1 + rs_localHist_1[idx_0];\n                keyLow_0 = keyLow_0 + 1U;\n                i_1 = offset_0;\n            }\n            d_1 = d_1 + 1U;\n        }\n    }\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n\n    thread array<uint, int(16)> localOffsets_0;\n    d_1 = 0U;\n    for(;;)\n    {\n        if(d_1 < 16U)\n        {\n        }\n        else\n        {\n            break;\n        }\n        localOffsets_0[d_1] = 0U;\n        d_1 = d_1 + 1U;\n    }\n    i_1 = start_0;\n    for(;;)\n    {\n        if(i_1 < _S1)\n        {\n        }\n        else\n        {\n            break;\n        }\n        uint value_0;\n        if(pass_0 == 0U)\n        {\n            uint _S7 = rs_keysHighIn_1[i_1];\n\n            uint _S8 = rs_valuesIn_1[i_1];\n            keyLow_0 = rs_keysLowIn_1[i_1];\n            keyHigh_0 = _S7;\n            value_0 = _S8;\n        }\n        else\n        {\n\n            if(writeToScratch_0)\n            {\n                uint device* _S9 = rs_sortedKeysHigh_1+i_1;\n\n                uint device* _S10 = rs_sortedValues_1+i_1;\n                keyLow_0 = *(rs_sortedKeysLow_1+i_1);\n                keyHigh_0 = *_S9;\n                value_0 = *_S10;\n            }\n            else\n            {\n                uint device* _S11 = rs_scratchKeysHigh_1+i_1;\n\n                uint device* _S12 = rs_scratchValues_1+i_1;\n                keyLow_0 = *(rs_scratchKeysLow_1+i_1);\n                keyHigh_0 = *_S11;\n                value_0 = *_S12;\n            }\n        }\n        if(pass_0 < 8U)\n        {\n            digit_0 = (keyLow_0 >> (pass_0 * 4U)) & 15U;\n        }\n        else\n        {\n            digit_0 = (keyHigh_0 >> ((pass_0 - 8U) * 4U)) & 15U;\n        }\n        uint dst_0 = rs_threadBase_1[_S3 + digit_0] + localOffsets_0[digit_0];\n        localOffsets_0[digit_0] = localOffsets_0[digit_0] + 1U;\n        if(writeToScratch_0)\n        {\n            *(rs_scratchKeysHigh_1+dst_0) = keyHigh_0;\n            *(rs_scratchKeysLow_1+dst_0) = keyLow_0;\n            *(rs_scratchValues_1+dst_0) = value_0;\n        }\n        else\n        {\n            *(rs_sortedKeysHigh_1+dst_0) = keyHigh_0;\n            *(rs_sortedKeysLow_1+dst_0) = keyLow_0;\n            *(rs_sortedValues_1+dst_0) = value_0;\n        }\n        i_1 = i_1 + 1U;\n    }\n    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture | mem_flags::mem_threadgroup_imageblock);\n    bool _S13 = !writeToScratch_0;\n    uint pass_1 = pass_0 + 1U;\n    writeToScratch_0 = _S13;\n    pass_0 = pass_1;\n}\nif(!writeToScratch_0)\n{\n    d_0 = start_0;\n\n    for(;;)\n    {\n        if(d_0 < _S1)\n        {\n        }\n        else\n        {\n            break;\n        }\n        *(rs_sortedKeysHigh_1+d_0) = *(rs_scratchKeysHigh_1+d_0);\n        *(rs_sortedKeysLow_1+d_0) = *(rs_scratchKeysLow_1+d_0);\n        *(rs_sortedValues_1+d_0) = *(rs_scratchValues_1+d_0);\n        d_0 = d_0 + 1U;\n    }\n}\nreturn;",
+  "header": "#include <metal_stdlib>\n#include <metal_math>\n#include <metal_texture>\nusing namespace metal;",
+  "buffer_parameters": [
+    {
+      "name": "rs_keysHighIn_1",
+      "buffer_index": 14,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_keysLowIn_1",
+      "buffer_index": 15,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_valuesIn_1",
+      "buffer_index": 16,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_counts_1",
+      "buffer_index": 17,
+      "role": "input",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_sortedKeysHigh_1",
+      "buffer_index": 18,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_sortedKeysLow_1",
+      "buffer_index": 19,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_sortedValues_1",
+      "buffer_index": 20,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_scratchKeysHigh_1",
+      "buffer_index": 21,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_scratchKeysLow_1",
+      "buffer_index": 22,
+      "role": "output",
+      "type": "uint device*"
+    },
+    {
+      "name": "rs_scratchValues_1",
+      "buffer_index": 23,
+      "role": "output",
+      "type": "uint device*"
+    }
+  ],
+  "attribute_aliases": [
+    "uint3 tid_0 = thread_position_in_grid;",
+    "uint3 gtid_0 = thread_position_in_threadgroup;"
+  ],
+  "line_directives_kept": false,
+  "swift_out": "build/slang_tile_global/radix_sort_tile_keys_fused_forward_mlx.swift"
+}

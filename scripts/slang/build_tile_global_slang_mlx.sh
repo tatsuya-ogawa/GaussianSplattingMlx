@@ -43,6 +43,7 @@ fi
 entries=(
   count_tiles_per_gaussian
   generate_keys
+  radix_sort_tile_keys_fused_forward
   compute_tile_ranges
   compute_tile_counts_from_ranges
   build_packed_tile_indices
@@ -65,6 +66,10 @@ for entry in "${entries[@]}"; do
     generate_keys)
       input_names="gk_depths_1,gk_rectMin_1,gk_rectMax_1,gk_radii_1,gk_offsets_1,gk_counts_1"
       output_names="gk_keysHigh_1,gk_keysLow_1,gk_gaussIdx_1"
+      ;;
+    radix_sort_tile_keys_fused_forward)
+      input_names="rs_keysHighIn_1,rs_keysLowIn_1,rs_valuesIn_1,rs_counts_1"
+      output_names="rs_sortedKeysHigh_1,rs_sortedKeysLow_1,rs_sortedValues_1,rs_scratchKeysHigh_1,rs_scratchKeysLow_1,rs_scratchValues_1"
       ;;
     compute_tile_ranges)
       input_names="tr_sortedKeysHigh_1,tr_counts_1"

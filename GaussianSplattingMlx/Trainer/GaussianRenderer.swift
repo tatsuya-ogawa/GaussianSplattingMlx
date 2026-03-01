@@ -542,9 +542,16 @@ class GaussianRenderer {
     private static let fusedRadixSortThreadCount = 128
 
     private lazy var fusedRadixSortTileKeysKernel: MLXFast.MLXFastKernel = {
-        MLXFast.metalKernel(
+        if let slangKernel = try? SlangKernelSpecLoader.loadKernel(
+            named: "radix_sort_tile_keys_fused_forward_mlx"
+        ) {
+            return slangKernel
+        }
+        Logger.shared.debug(
+            "radix_sort_tile_keys_fused_forward_mlx unavailable. Falling back to inline Metal kernel.")
+        return MLXFast.metalKernel(
             name: "radix_sort_tile_keys_fused_u32_v1",
-            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "tileBitCountValue"],
+            inputNames: ["keysHighIn", "keysLowIn", "valuesIn", "counts"],
             outputNames: [
                 "sortedKeysHigh", "sortedKeysLow", "sortedValues",
                 "scratchKeysHigh", "scratchKeysLow", "scratchValues",
@@ -560,7 +567,7 @@ class GaussianRenderer {
                     return;
                 }
 
-                uint n = keysHighIn_shape[0];
+                uint n = counts[0];
                 if (n == 0) {
                     return;
                 }
@@ -569,7 +576,7 @@ class GaussianRenderer {
                 uint start = lane * chunk;
                 uint end = min(start + chunk, n);
 
-                uint highBits = tileBitCountValue;
+                uint highBits = counts[1];
                 uint highPasses = (highBits + RADIX_BITS - 1u) / RADIX_BITS;
                 if (highPasses < 1u) {
                     highPasses = 1u;
@@ -699,7 +706,15 @@ class GaussianRenderer {
         }
 
         let outputs = fusedRadixSortTileKeysKernel(
-            [keysHigh, keysLow, values, MLXArray(UInt32(Swift.max(tileBitCount, 1)))],
+            [
+                keysHigh,
+                keysLow,
+                values,
+                MLXArray([
+                    UInt32(n),
+                    UInt32(Swift.max(tileBitCount, 1)),
+                ]),
+            ],
             grid: (Self.fusedRadixSortThreadCount, 1, 1),
             threadGroup: (Self.fusedRadixSortThreadCount, 1, 1),
             outputShapes: [[n], [n], [n], [n], [n], [n]],
