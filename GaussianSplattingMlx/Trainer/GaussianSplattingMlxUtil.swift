@@ -229,41 +229,6 @@ func get_rect(
     )
     return (rect_min, rect_max)
 }
-func build_color(
-    means3d: MLXArray,
-    shs: MLXArray,
-    cameraCenter: MLXArray,
-    activeShDegree: Int
-)
-    -> MLXArray
-{
-    let rays_d = means3d - cameraCenter
-    var color = evalSh(
-        deg: activeShDegree,
-        sh: shs.transposed(0, 2, 1),
-        dirs: rays_d
-    )
-    color = MLX.clip(color + 0.5, min: 0.0)
-    return color
-}
-func build_color(
-    means3d: MLXArray,
-    shs: MLXArray,
-    camera: Camera,
-    activeShDegree: Int
-)
-    -> MLXArray
-{
-    let cameraCentor = MLXArray(
-        [Float(camera.cameraCenter.x), Float(camera.cameraCenter.y), Float(camera.cameraCenter.z)]
-            as [Float])[.newAxis, .ellipsis]
-    return build_color(
-        means3d: means3d,
-        shs: shs,
-        cameraCenter: cameraCentor,
-        activeShDegree: activeShDegree
-    )
-}
 func matrixInverse2d(_ m: MLXArray) -> MLXArray {
     precondition(
         m.shape.count >= 2 && m.shape.suffix(2) == [2, 2],
