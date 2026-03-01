@@ -1555,7 +1555,7 @@ class GaussianRenderer {
         opacity: MLXArray,
         depths: MLXArray,
         radii: MLXArray,
-        conic: MLXArray? = nil,
+        conic: MLXArray,
         inputIsDepthSorted: Bool = false
     ) -> (
         render: MLXArray,
@@ -1587,7 +1587,7 @@ class GaussianRenderer {
         opacity: MLXArray,
         depths: MLXArray,
         radii: MLXArray,
-        conic: MLXArray? = nil,
+        conic: MLXArray,
         inputIsDepthSorted: Bool = false
     ) -> (
         render: MLXArray,
@@ -1608,7 +1608,7 @@ class GaussianRenderer {
             width: imageWidth,
             height: imageHeight
         )
-        let conicValues = conic ?? matrixInverse2d(cov2d)
+        let conicValues = conic
         let packedGaussians = buildPackedGaussians(
             means2d: means2d,
             conic: conicValues,

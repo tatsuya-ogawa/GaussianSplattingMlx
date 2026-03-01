@@ -229,23 +229,6 @@ func get_rect(
     )
     return (rect_min, rect_max)
 }
-func matrixInverse2d(_ m: MLXArray) -> MLXArray {
-    precondition(
-        m.shape.count >= 2 && m.shape.suffix(2) == [2, 2],
-        "Input shape should be 2x2"
-    )
-    let a = m[.ellipsis, 0, 0]
-    let b = m[.ellipsis, 0, 1]
-    let c = m[.ellipsis, 1, 0]
-    let d = m[.ellipsis, 1, 1]
-    let det = a * d - b * c
-    let inv = MLXArray.zeros(m.shape)
-    inv[.ellipsis, 0, 0] = d / det
-    inv[.ellipsis, 0, 1] = -b / det
-    inv[.ellipsis, 1, 0] = -c / det
-    inv[.ellipsis, 1, 1] = a / det
-    return inv
-}
 func conditionToIndices(condition: MLXArray) -> MLXArray {
     let mask = condition.reshaped([-1]).asType(.int32)
     let n = mask.shape[0]
