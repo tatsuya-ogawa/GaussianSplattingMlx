@@ -558,6 +558,25 @@ class GaussianRenderer {
         )
     }()
 
+    private lazy var radixExtractTwoBitsKernel: MLXFast.MLXFastKernel = {
+        MLXFast.metalKernel(
+            name: "radix_extract_two_bits_u32_v1",
+            inputNames: ["keyPart", "bitValue"],
+            outputNames: ["digit"],
+            source: """
+                uint elem = thread_position_in_grid.x;
+                uint n = keyPart_shape[0];
+                if (elem >= n) {
+                    return;
+                }
+
+                uint bit = bitValue;
+                uint value = keyPart[elem];
+                digit[elem] = int((value >> bit) & 3u);
+                """
+        )
+    }()
+
     private lazy var radixScatterTripletKernel: MLXFast.MLXFastKernel = {
         MLXFast.metalKernel(
             name: "radix_scatter_triplet_u32_v1",
@@ -619,6 +638,62 @@ class GaussianRenderer {
         return (scattered[0], scattered[1], scattered[2])
     }
 
+    private func radixTwoBitPassForTileKeys(
+        keyPart: MLXArray,
+        bit: Int,
+        keysHigh: MLXArray,
+        keysLow: MLXArray,
+        values: MLXArray
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let n = keyPart.shape[0]
+        let digit = radixExtractTwoBitsKernel(
+            [keyPart, MLXArray(UInt32(bit))],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [[n]],
+            outputDTypes: [.int32]
+        )[0]
+
+        let mask0 = (digit .== 0).asType(.int32)
+        let mask1 = (digit .== 1).asType(.int32)
+        let mask2 = (digit .== 2).asType(.int32)
+        let mask3 = (digit .== 3).asType(.int32)
+
+        let inc0 = mask0.cumsum(axis: 0).asType(.int32)
+        let inc1 = mask1.cumsum(axis: 0).asType(.int32)
+        let inc2 = mask2.cumsum(axis: 0).asType(.int32)
+        let inc3 = mask3.cumsum(axis: 0).asType(.int32)
+
+        let exc0 = inc0 - mask0
+        let exc1 = inc1 - mask1
+        let exc2 = inc2 - mask2
+        let exc3 = inc3 - mask3
+
+        let count0 = inc0[n - 1]
+        let count1 = inc1[n - 1]
+        let count2 = inc2[n - 1]
+
+        let base1 = count0
+        let base2 = count0 + count1
+        let base3 = count0 + count1 + count2
+
+        let destination =
+            exc0 * mask0
+            + (base1 + exc1) * mask1
+            + (base2 + exc2) * mask2
+            + (base3 + exc3) * mask3
+        let destinationIndices = destination.asType(.int32)
+
+        let scattered = radixScatterTripletKernel(
+            [keysHigh, keysLow, values, destinationIndices],
+            grid: (max(n, 1), 1, 1),
+            threadGroup: (min(256, max(n, 1)), 1, 1),
+            outputShapes: [keysHigh.shape, keysLow.shape, values.shape],
+            outputDTypes: [keysHigh.dtype, keysLow.dtype, values.dtype]
+        )
+        return (scattered[0], scattered[1], scattered[2])
+    }
+
     private func radixSortTileKeys(
         keysHigh: MLXArray,
         keysLow: MLXArray,
@@ -629,8 +704,8 @@ class GaussianRenderer {
         var sortedKeysLow = keysLow
         var sortedValues = values
 
-        for bit in 0..<32 {
-            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
+        for bit in stride(from: 0, to: 32, by: 2) {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixTwoBitPassForTileKeys(
                 keyPart: sortedKeysLow,
                 bit: bit,
                 keysHigh: sortedKeysHigh,
@@ -640,10 +715,21 @@ class GaussianRenderer {
         }
 
         let keyHighBits = Swift.max(tileBitCount, 1)
-        for bit in 0..<keyHighBits {
+        var highBit = 0
+        while highBit + 1 < keyHighBits {
+            (sortedKeysHigh, sortedKeysLow, sortedValues) = radixTwoBitPassForTileKeys(
+                keyPart: sortedKeysHigh,
+                bit: highBit,
+                keysHigh: sortedKeysHigh,
+                keysLow: sortedKeysLow,
+                values: sortedValues
+            )
+            highBit += 2
+        }
+        if highBit < keyHighBits {
             (sortedKeysHigh, sortedKeysLow, sortedValues) = radixBitPassForTileKeys(
                 keyPart: sortedKeysHigh,
-                bit: bit,
+                bit: highBit,
                 keysHigh: sortedKeysHigh,
                 keysLow: sortedKeysLow,
                 values: sortedValues

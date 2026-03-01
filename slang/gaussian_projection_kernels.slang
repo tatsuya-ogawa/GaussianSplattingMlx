@@ -17,6 +17,13 @@
 
 import gaussian_projection_screen_shared;
 
+#define FUSED_SH_COEFF(_shBase, _k) \
+    float3( \
+        fused_shs[(_shBase) + uint((_k) * 3 + 0)], \
+        fused_shs[(_shBase) + uint((_k) * 3 + 1)], \
+        fused_shs[(_shBase) + uint((_k) * 3 + 2)] \
+    )
+
 // ---------------------------------------------------------------------------
 // projection_ndc_forward
 // ---------------------------------------------------------------------------
@@ -253,76 +260,83 @@ void gaussian_projection_screen_fused_forward(uint3 tid : SV_DispatchThreadID)
     fused_outDepths[p] = projection.pv2;
 
     int degree = int(fused_counts[1]);
-    int coeffCount = (degree + 1) * (degree + 1);
     int coeffStride = int(fused_counts[2]);
 
     float x = m0 - fused_cameraCenter[0];
     float y = m1 - fused_cameraCenter[1];
     float z = m2 - fused_cameraCenter[2];
-    float xx = x * x;
-    float yy = y * y;
-    float zz = z * z;
-    float xy = x * y;
-    float yz = y * z;
-    float xz = x * z;
+    uint shPointBase = p * uint(coeffStride * 3);
 
-    float basis[25];
-    for (int i = 0; i < 25; ++i)
-    {
-        basis[i] = 0.0;
-    }
-
-    basis[0] = 0.28209479177387814;
+    float3 colorAccum = 0.28209479177387814 * FUSED_SH_COEFF(shPointBase, 0);
     if (degree > 0)
     {
-        basis[1] = -0.4886025119029199 * y;
-        basis[2] = 0.4886025119029199 * z;
-        basis[3] = -0.4886025119029199 * x;
+        colorAccum += (-0.4886025119029199 * y) * FUSED_SH_COEFF(shPointBase, 1);
+        colorAccum += (0.4886025119029199 * z) * FUSED_SH_COEFF(shPointBase, 2);
+        colorAccum += (-0.4886025119029199 * x) * FUSED_SH_COEFF(shPointBase, 3);
+
+        if (degree > 1)
+        {
+            float xx = x * x;
+            float yy = y * y;
+            float zz = z * z;
+            float xy = x * y;
+            float yz = y * z;
+            float xz = x * z;
+
+            colorAccum += (1.0925484305920792 * xy) * FUSED_SH_COEFF(shPointBase, 4);
+            colorAccum += (-1.0925484305920792 * yz) * FUSED_SH_COEFF(shPointBase, 5);
+            colorAccum += (0.31539156525252005 * (2.0 * zz - xx - yy)) * FUSED_SH_COEFF(shPointBase, 6);
+            colorAccum += (-1.0925484305920792 * xz) * FUSED_SH_COEFF(shPointBase, 7);
+            colorAccum += (0.5462742152960396 * (xx - yy)) * FUSED_SH_COEFF(shPointBase, 8);
+
+            if (degree > 2)
+            {
+                colorAccum += (-0.5900435899266435 * y * (3.0 * xx - yy))
+                    * FUSED_SH_COEFF(shPointBase, 9);
+                colorAccum += (2.890611442640554 * xy * z)
+                    * FUSED_SH_COEFF(shPointBase, 10);
+                colorAccum += (-0.4570457994644658 * y * (4.0 * zz - xx - yy))
+                    * FUSED_SH_COEFF(shPointBase, 11);
+                colorAccum += (0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy))
+                    * FUSED_SH_COEFF(shPointBase, 12);
+                colorAccum += (-0.4570457994644658 * x * (4.0 * zz - xx - yy))
+                    * FUSED_SH_COEFF(shPointBase, 13);
+                colorAccum += (1.445305721320277 * z * (xx - yy))
+                    * FUSED_SH_COEFF(shPointBase, 14);
+                colorAccum += (-0.5900435899266435 * x * (xx - 3.0 * yy))
+                    * FUSED_SH_COEFF(shPointBase, 15);
+
+                if (degree > 3)
+                {
+                    colorAccum += (2.5033429417967046 * xy * (xx - yy))
+                        * FUSED_SH_COEFF(shPointBase, 16);
+                    colorAccum += (-1.7701307697799304 * yz * (3.0 * xx - yy))
+                        * FUSED_SH_COEFF(shPointBase, 17);
+                    colorAccum += (0.9461746957575601 * xy * (7.0 * zz - 1.0))
+                        * FUSED_SH_COEFF(shPointBase, 18);
+                    colorAccum += (-0.6690465435572892 * yz * (7.0 * zz - 3.0))
+                        * FUSED_SH_COEFF(shPointBase, 19);
+                    colorAccum += (0.10578554691520431 * (zz * (35.0 * zz - 30.0) + 3.0))
+                        * FUSED_SH_COEFF(shPointBase, 20);
+                    colorAccum += (-0.6690465435572892 * xz * (7.0 * zz - 3.0))
+                        * FUSED_SH_COEFF(shPointBase, 21);
+                    colorAccum += (0.47308734787878004 * (xx - yy) * (7.0 * zz - 1.0))
+                        * FUSED_SH_COEFF(shPointBase, 22);
+                    colorAccum += (-1.7701307697799304 * xz * (xx - 3.0 * yy))
+                        * FUSED_SH_COEFF(shPointBase, 23);
+                    colorAccum += (0.6258357354491761 * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)))
+                        * FUSED_SH_COEFF(shPointBase, 24);
+                }
+            }
+        }
     }
-    if (degree > 1)
-    {
-        basis[4] = 1.0925484305920792 * xy;
-        basis[5] = -1.0925484305920792 * yz;
-        basis[6] = 0.31539156525252005 * (2.0 * zz - xx - yy);
-        basis[7] = -1.0925484305920792 * xz;
-        basis[8] = 0.5462742152960396 * (xx - yy);
-    }
-    if (degree > 2)
-    {
-        basis[9] = -0.5900435899266435 * y * (3.0 * xx - yy);
-        basis[10] = 2.890611442640554 * xy * z;
-        basis[11] = -0.4570457994644658 * y * (4.0 * zz - xx - yy);
-        basis[12] = 0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
-        basis[13] = -0.4570457994644658 * x * (4.0 * zz - xx - yy);
-        basis[14] = 1.445305721320277 * z * (xx - yy);
-        basis[15] = -0.5900435899266435 * x * (xx - 3.0 * yy);
-    }
-    if (degree > 3)
-    {
-        basis[16] = 2.5033429417967046 * xy * (xx - yy);
-        basis[17] = -1.7701307697799304 * yz * (3.0 * xx - yy);
-        basis[18] = 0.9461746957575601 * xy * (7.0 * zz - 1.0);
-        basis[19] = -0.6690465435572892 * yz * (7.0 * zz - 3.0);
-        basis[20] = 0.10578554691520431 * (zz * (35.0 * zz - 30.0) + 3.0);
-        basis[21] = -0.6690465435572892 * xz * (7.0 * zz - 3.0);
-        basis[22] = 0.47308734787878004 * (xx - yy) * (7.0 * zz - 1.0);
-        basis[23] = -1.7701307697799304 * xz * (xx - 3.0 * yy);
-        basis[24] = 0.6258357354491761 * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy));
-    }
+    colorAccum += 0.5;
+    colorAccum = max(colorAccum, 0.0);
 
     uint colorBase = p * 3;
-    uint shPointBase = p * uint(coeffStride * 3);
-    for (int ch = 0; ch < 3; ++ch)
-    {
-        float value = 0.0;
-        for (int k = 0; k < coeffCount; ++k)
-        {
-            uint shIndex = shPointBase + uint(k * 3 + ch);
-            value += basis[k] * fused_shs[shIndex];
-        }
-        float color = value + 0.5;
-        fused_outColor[colorBase + uint(ch)] = color < 0.0 ? 0.0 : color;
-    }
+    fused_outColor[colorBase + 0] = colorAccum.x;
+    fused_outColor[colorBase + 1] = colorAccum.y;
+    fused_outColor[colorBase + 2] = colorAccum.z;
 
     uint scaleBase = p * 3;
     uint rotBase = p * 4;
