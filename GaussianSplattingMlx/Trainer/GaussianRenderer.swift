@@ -114,6 +114,8 @@ class GaussianRenderer {
         let numTiles = gridW * gridH
 
         // Captured forward context for 1-pass reverse backward
+        var savedOutColor: MLXArray?
+        var savedOutDepth: MLXArray?
         var savedOutAlpha: MLXArray?
         var savedLastContrib: MLXArray?
 
@@ -135,6 +137,8 @@ class GaussianRenderer {
                     packedGaussians.dtype, .uint32,
                 ]
             )
+            savedOutColor = allOutputs[0]
+            savedOutDepth = allOutputs[1]
             savedOutAlpha = allOutputs[2]
             savedLastContrib = allOutputs[3]
             return [allOutputs[0], allOutputs[1], allOutputs[2]]
@@ -144,12 +148,15 @@ class GaussianRenderer {
         return CustomFunction {
             Forward(forward)
             VJP { primals, cotangents in
+                let outColor = savedOutColor!
+                let outDepth = savedOutDepth!
                 let outAlpha = savedOutAlpha!
                 let lastContrib = savedLastContrib!
                 if let profiler = renderer.profiler {
                     return profiler.measure("bwd.globalTileComposite") {
                         let result = Self._globalTileCompositeVJP(
                             primals: primals, cotangents: cotangents,
+                            outColor: outColor, outDepth: outDepth,
                             outAlpha: outAlpha, lastContrib: lastContrib,
                             backwardKernel: backwardKernel,
                             pixelCount: pixelCount,
@@ -163,6 +170,7 @@ class GaussianRenderer {
                 }
                 return Self._globalTileCompositeVJP(
                     primals: primals, cotangents: cotangents,
+                    outColor: outColor, outDepth: outDepth,
                     outAlpha: outAlpha, lastContrib: lastContrib,
                     backwardKernel: backwardKernel,
                     pixelCount: pixelCount,
@@ -176,6 +184,7 @@ class GaussianRenderer {
 
     private static func _globalTileCompositeVJP(
         primals: [MLXArray], cotangents: [MLXArray],
+        outColor: MLXArray, outDepth: MLXArray,
         outAlpha: MLXArray, lastContrib: MLXArray,
         backwardKernel: MLXFast.MLXFastKernel,
         pixelCount: Int,
@@ -197,7 +206,7 @@ class GaussianRenderer {
         let gradPacked = backwardKernel(
             [
                 packedGaussians, packedTileIndices, tileCounts, cotColor, cotDepth, cotAlpha,
-                renderCounts, outAlpha, lastContrib,
+                outColor, outDepth, renderCounts, outAlpha, lastContrib,
             ],
             grid: (max(pixelsPerTilePadded, 1), max(numTiles, 1), 1),
             threadGroup: (min(256, max(pixelsPerTilePadded, 1)), 1, 1),

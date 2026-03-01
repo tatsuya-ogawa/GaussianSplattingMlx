@@ -416,13 +416,22 @@ RWStructuredBuffer<float> gtf_outDepth; // [pixelCount]
 RWStructuredBuffer<float> gtf_outAlpha; // [pixelCount]
 RWStructuredBuffer<uint> gtf_outLastContrib; // [pixelCount]
 
-struct TileGlobalBlendStepOutputs : IDifferentiable
+struct TileGlobalSample : IDifferentiable
+{
+    float alpha;
+    float colorX;
+    float colorY;
+    float colorZ;
+    float depth;
+};
+
+struct TileGlobalPixelState : IDifferentiable
 {
     float colorX;
     float colorY;
     float colorZ;
     float depth;
-    float alphaAcc;
+    float trans;
 };
 
 [Differentiable]
@@ -447,23 +456,68 @@ float tileGlobalAlphaFromGaussian(
 }
 
 [Differentiable]
-TileGlobalBlendStepOutputs tileGlobalBlendStep(
-    float T_i,
-    float alpha,
+TileGlobalSample evaluateTileGlobalSample(
+    float meanX,
+    float meanY,
+    float c00,
+    float c01,
+    float c10,
+    float c11,
+    float opacity,
     float colorX,
     float colorY,
     float colorZ,
-    float depth
+    float depth,
+    no_diff float px,
+    no_diff float py
 )
 {
-    float contrib = T_i * alpha;
-    TileGlobalBlendStepOutputs outVals;
-    outVals.colorX = contrib * colorX;
-    outVals.colorY = contrib * colorY;
-    outVals.colorZ = contrib * colorZ;
-    outVals.depth = contrib * depth;
-    outVals.alphaAcc = contrib;
-    return outVals;
+    TileGlobalSample sample;
+    sample.alpha = tileGlobalAlphaFromGaussian(
+        meanX, meanY, c00, c01, c10, c11, opacity, px, py);
+    sample.colorX = colorX;
+    sample.colorY = colorY;
+    sample.colorZ = colorZ;
+    sample.depth = depth;
+    return sample;
+}
+
+[Differentiable]
+TileGlobalPixelState updateTileGlobalPixelState(
+    TileGlobalPixelState prevState,
+    TileGlobalSample sample
+)
+{
+    float contrib = prevState.trans * sample.alpha;
+    TileGlobalPixelState nextState;
+    nextState.colorX = prevState.colorX + contrib * sample.colorX;
+    nextState.colorY = prevState.colorY + contrib * sample.colorY;
+    nextState.colorZ = prevState.colorZ + contrib * sample.colorZ;
+    nextState.depth = prevState.depth + contrib * sample.depth;
+    nextState.trans = prevState.trans * (1.0 - sample.alpha);
+    return nextState;
+}
+
+TileGlobalPixelState undoTileGlobalPixelState(
+    TileGlobalPixelState currentState,
+    TileGlobalSample sample
+)
+{
+    float denom = 1.0 - sample.alpha;
+    if (denom < 1e-6)
+    {
+        denom = 1e-6;
+    }
+
+    float prevTrans = currentState.trans / denom;
+    float contrib = prevTrans * sample.alpha;
+    TileGlobalPixelState prevState;
+    prevState.colorX = currentState.colorX - contrib * sample.colorX;
+    prevState.colorY = currentState.colorY - contrib * sample.colorY;
+    prevState.colorZ = currentState.colorZ - contrib * sample.colorZ;
+    prevState.depth = currentState.depth - contrib * sample.depth;
+    prevState.trans = prevTrans;
+    return prevState;
 }
 
 [shader("compute")]
@@ -500,12 +554,12 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
 
     float px = float(x);
     float py = float(y);
-    float T = 1.0;
-    float accAlpha = 0.0;
-    float accumColorX = 0.0;
-    float accumColorY = 0.0;
-    float accumColorZ = 0.0;
-    float accumDepth = 0.0;
+    TileGlobalPixelState state;
+    state.colorX = 0.0;
+    state.colorY = 0.0;
+    state.colorZ = 0.0;
+    state.depth = 0.0;
+    state.trans = 1.0;
     uint nContrib = count;
 
     for (uint i = 0; i < count; ++i)
@@ -525,7 +579,7 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
         float opacity = gtf_packedGaussians[gBase + 9];
         float depth = gtf_packedGaussians[gBase + 10];
 
-        float alpha = tileGlobalAlphaFromGaussian(
+        TileGlobalSample sample = evaluateTileGlobalSample(
             meanX,
             meanY,
             c00,
@@ -533,38 +587,29 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
             c10,
             c11,
             opacity,
+            colorX,
+            colorY,
+            colorZ,
+            depth,
             px,
             py
         );
 
-        TileGlobalBlendStepOutputs stepVals = tileGlobalBlendStep(
-            T,
-            alpha,
-            colorX,
-            colorY,
-            colorZ,
-            depth
-        );
-        accAlpha += stepVals.alphaAcc;
-        accumColorX += stepVals.colorX;
-        accumColorY += stepVals.colorY;
-        accumColorZ += stepVals.colorZ;
-        accumDepth += stepVals.depth;
-        T *= (1.0 - alpha);
-        if (T < 1e-4)
+        state = updateTileGlobalPixelState(state, sample);
+        if (state.trans < 1e-4)
         {
             nContrib = i + 1;
             break;
         }
     }
 
-    float bg = (whiteBg != 0) ? (1.0 - accAlpha) : 0.0;
+    float bg = (whiteBg != 0) ? state.trans : 0.0;
     uint colorBase = p * 3;
-    gtf_outColor[colorBase + 0] = accumColorX + bg;
-    gtf_outColor[colorBase + 1] = accumColorY + bg;
-    gtf_outColor[colorBase + 2] = accumColorZ + bg;
-    gtf_outDepth[p] = accumDepth;
-    gtf_outAlpha[p] = accAlpha;
+    gtf_outColor[colorBase + 0] = state.colorX + bg;
+    gtf_outColor[colorBase + 1] = state.colorY + bg;
+    gtf_outColor[colorBase + 2] = state.colorZ + bg;
+    gtf_outDepth[p] = state.depth;
+    gtf_outAlpha[p] = 1.0 - state.trans;
     gtf_outLastContrib[p] = nContrib;
 }
 
@@ -577,6 +622,8 @@ StructuredBuffer<uint> gtb_tileCounts;       // [numTiles]
 StructuredBuffer<float> gtb_cotColor;        // [pixelCount,3]
 StructuredBuffer<float> gtb_cotDepth;        // [pixelCount]
 StructuredBuffer<float> gtb_cotAlpha;        // [pixelCount]
+StructuredBuffer<float> gtb_outColor;        // [pixelCount,3] forward output color
+StructuredBuffer<float> gtb_outDepth;        // [pixelCount] forward output depth
 StructuredBuffer<uint> gtb_renderCounts;     // [0]=pixelCount,[1]=maxTilePairs,[2]=gridW,[3]=tileW,[4]=tileH,[5]=imageW,[6]=imageH,[7]=whiteBg
 StructuredBuffer<float> gtb_outAlpha;        // [pixelCount] forward output alpha
 StructuredBuffer<uint> gtb_lastContrib;      // [pixelCount] forward nContrib per pixel
@@ -628,41 +675,55 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
     uint count = gtb_tileCounts[tileIndex];
     uint tileBase = tileIndex * maxTilePairs;
 
-    // Load per-pixel gradient inputs and forward context
-    float gColorX = 0.0;
-    float gColorY = 0.0;
-    float gColorZ = 0.0;
-    float gDepth = 0.0;
-    float gAlpha = 0.0;
-    float whiteTerm = 0.0;
+    // Load per-pixel cotangent and forward state.
+    TileGlobalPixelState currentState;
+    currentState.colorX = 0.0;
+    currentState.colorY = 0.0;
+    currentState.colorZ = 0.0;
+    currentState.depth = 0.0;
+    currentState.trans = 0.0;
+
+    TileGlobalPixelState cotCurrentState;
+    cotCurrentState.colorX = 0.0;
+    cotCurrentState.colorY = 0.0;
+    cotCurrentState.colorZ = 0.0;
+    cotCurrentState.depth = 0.0;
+    cotCurrentState.trans = 0.0;
+
     float px = 0.0;
     float py = 0.0;
-    float T_final = 0.0;
-    uint n_contrib = 0;
+    uint nContrib = 0;
     if (activePixel)
     {
         uint p = pixelY * imageW + pixelX;
         uint colorBase = p * 3;
-        gColorX = gtb_cotColor[colorBase];
-        gColorY = gtb_cotColor[colorBase + 1];
-        gColorZ = gtb_cotColor[colorBase + 2];
-        gDepth = gtb_cotDepth[p];
-        gAlpha = gtb_cotAlpha[p];
-        if (whiteBg != 0)
-        {
-            whiteTerm = -(gColorX + gColorY + gColorZ);
-        }
+        float cotColorX = gtb_cotColor[colorBase];
+        float cotColorY = gtb_cotColor[colorBase + 1];
+        float cotColorZ = gtb_cotColor[colorBase + 2];
+        float cotDepth = gtb_cotDepth[p];
+        float cotAlpha = gtb_cotAlpha[p];
+        float trans = 1.0 - gtb_outAlpha[p];
+        float bg = (whiteBg != 0) ? trans : 0.0;
+
+        currentState.colorX = gtb_outColor[colorBase + 0] - bg;
+        currentState.colorY = gtb_outColor[colorBase + 1] - bg;
+        currentState.colorZ = gtb_outColor[colorBase + 2] - bg;
+        currentState.depth = gtb_outDepth[p];
+        currentState.trans = trans;
+
+        cotCurrentState.colorX = cotColorX;
+        cotCurrentState.colorY = cotColorY;
+        cotCurrentState.colorZ = cotColorZ;
+        cotCurrentState.depth = cotDepth;
+        cotCurrentState.trans = -cotAlpha + ((whiteBg != 0) ? (cotColorX + cotColorY + cotColorZ) : 0.0);
+
         px = float(pixelX);
         py = float(pixelY);
-        T_final = 1.0 - gtb_outAlpha[p];
-        n_contrib = gtb_lastContrib[p];
+        nContrib = gtb_lastContrib[p];
     }
 
-    // ---- Single reverse pass: gradient computation + WaveActiveSum reduction ----
+    // ---- Single reverse pass: AD on sample/state math + manual reduction ----
     uint numChunks = (count + GTB_THREADS - 1) / GTB_THREADS;
-    bool passDone = !activePixel;
-    float T = T_final;
-    float suffix = 0.0;
 
     for (int c = int(numChunks) - 1; c >= 0; c--)
     {
@@ -702,7 +763,7 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
             float g_colorX = 0.0; float g_colorY = 0.0; float g_colorZ = 0.0;
             float g_opacity = 0.0; float g_depth = 0.0;
 
-            if (!passDone && uint(ii) < n_contrib)
+            if (activePixel && uint(ii) < nContrib)
             {
                 float meanX = sgMeanX[local];
                 float meanY = sgMeanY[local];
@@ -715,7 +776,8 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 float colorZ = sgColorZ[local];
                 float opacity = sgOpacity[local];
                 float depth = sgDepth[local];
-                float alpha = tileGlobalAlphaFromGaussian(
+
+                TileGlobalSample sample = evaluateTileGlobalSample(
                     meanX,
                     meanY,
                     c00,
@@ -723,54 +785,26 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                     c10,
                     c11,
                     opacity,
+                    colorX,
+                    colorY,
+                    colorZ,
+                    depth,
                     px,
                     py
                 );
 
-                float denom = 1.0 - alpha;
-                if (denom < 1e-6) { denom = 1e-6; }
+                TileGlobalPixelState prevState = undoTileGlobalPixelState(currentState, sample);
 
-                // Recover transmittance before this gaussian
-                float T_i = T / denom;
-                float contrib = T_i * alpha;
-                float cotAlphaAcc = gAlpha + whiteTerm;
-                float cVal = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + cotAlphaAcc;
-                float suffixBefore = suffix;
-
-                // Accumulate suffix for next (earlier) gaussian
-                suffix += cVal * contrib;
-                T = T_i;
-
-                DifferentialPair<float> dpTi = diffPair(T_i, 0.0);
-                DifferentialPair<float> dpAlpha = diffPair(alpha, 0.0);
-                DifferentialPair<float> dpColorX = diffPair(colorX, g_colorX);
-                DifferentialPair<float> dpColorY = diffPair(colorY, g_colorY);
-                DifferentialPair<float> dpColorZ = diffPair(colorZ, g_colorZ);
-                DifferentialPair<float> dpDepth = diffPair(depth, g_depth);
-                TileGlobalBlendStepOutputs cotBlend;
-                cotBlend.colorX = gColorX;
-                cotBlend.colorY = gColorY;
-                cotBlend.colorZ = gColorZ;
-                cotBlend.depth = gDepth;
-                cotBlend.alphaAcc = cotAlphaAcc;
-                bwd_diff(tileGlobalBlendStep)(
-                    dpTi,
-                    dpAlpha,
-                    dpColorX,
-                    dpColorY,
-                    dpColorZ,
-                    dpDepth,
-                    cotBlend
+                DifferentialPair<TileGlobalPixelState> dpPrevState = diffPair(prevState);
+                DifferentialPair<TileGlobalSample> dpSample = diffPair(sample);
+                bwd_diff(updateTileGlobalPixelState)(
+                    dpPrevState,
+                    dpSample,
+                    cotCurrentState
                 );
-                g_colorX = dpColorX.d;
-                g_colorY = dpColorY.d;
-                g_colorZ = dpColorZ.d;
-                g_depth = dpDepth.d;
+                currentState = prevState;
+                cotCurrentState = dpPrevState.d;
 
-                float gradAlpha = dpAlpha.d - suffixBefore / denom;
-
-                // Hybrid AD: keep tile-level reverse traversal/reduction handwritten,
-                // and let AD differentiate the per-gaussian alpha math.
                 DifferentialPair<float> dpMeanX = diffPair(meanX, g_meanX);
                 DifferentialPair<float> dpMeanY = diffPair(meanY, g_meanY);
                 DifferentialPair<float> dpC00 = diffPair(c00, g_c00);
@@ -778,7 +812,11 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 DifferentialPair<float> dpC10 = diffPair(c10, g_c10);
                 DifferentialPair<float> dpC11 = diffPair(c11, g_c11);
                 DifferentialPair<float> dpOpacity = diffPair(opacity, g_opacity);
-                bwd_diff(tileGlobalAlphaFromGaussian)(
+                DifferentialPair<float> dpColorX = diffPair(colorX, g_colorX);
+                DifferentialPair<float> dpColorY = diffPair(colorY, g_colorY);
+                DifferentialPair<float> dpColorZ = diffPair(colorZ, g_colorZ);
+                DifferentialPair<float> dpDepth = diffPair(depth, g_depth);
+                bwd_diff(evaluateTileGlobalSample)(
                     dpMeanX,
                     dpMeanY,
                     dpC00,
@@ -786,9 +824,13 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                     dpC10,
                     dpC11,
                     dpOpacity,
+                    dpColorX,
+                    dpColorY,
+                    dpColorZ,
+                    dpDepth,
                     px,
                     py,
-                    gradAlpha
+                    dpSample.d
                 );
 
                 g_meanX = dpMeanX.d;
@@ -798,6 +840,10 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 g_c10 = dpC10.d;
                 g_c11 = dpC11.d;
                 g_opacity = dpOpacity.d;
+                g_colorX = dpColorX.d;
+                g_colorY = dpColorY.d;
+                g_colorZ = dpColorZ.d;
+                g_depth = dpDepth.d;
             }
 
             // SIMD group reduction: sum gradients across 32 threads
