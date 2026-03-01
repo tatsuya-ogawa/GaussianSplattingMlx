@@ -54,7 +54,6 @@ else
 fi
 
 entries=(
-  projection_ndc_backward
   gaussian_projection_screen_fused_forward
   gaussian_projection_screen_fused_backward
 )
@@ -67,10 +66,6 @@ for entry in "${entries[@]}"; do
   input_names=""
   output_names=""
   case "$entry" in
-    projection_ndc_backward)
-      input_names="proj_points_1,proj_viewMatrix_1,proj_projMatrix_1,proj_counts_1,proj_cotMeanNdc_1,proj_cotPView_1"
-      output_names="proj_gradPoints_1"
-      ;;
     gaussian_projection_screen_fused_forward)
       input_names="fused_scales_1,fused_rotations_1,fused_means3d_1,fused_shs_1,fused_cameraCenter_1,fused_viewMatrix_1,fused_projMatrix_1,fused_fovX_1,fused_fovY_1,fused_focalX_1,fused_focalY_1,fused_imageWidth_1,fused_imageHeight_1,fused_counts_1"
       output_names="fused_outMeans2d_1,fused_outDepths_1,fused_outColor_1,fused_outCov2d_1,fused_outConic_1,fused_outRadii_1"

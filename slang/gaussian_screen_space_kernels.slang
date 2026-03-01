@@ -1,7 +1,7 @@
 // gaussian_screen_space_kernels.slang
 //
-// Active kernels:
-// - gaussian_screen_cov3d_backward
+// No active kernels are built from this file at the moment.
+// `gaussian_screen_cov3d_backward` is kept as a reference implementation.
 
 import gaussian_projection_screen_shared;
 

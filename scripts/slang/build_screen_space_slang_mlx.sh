@@ -50,42 +50,48 @@ else
   exit 1
 fi
 
-entries=(
-  gaussian_screen_cov3d_backward
-)
+declare -a entries=()
 
-for entry in "${entries[@]}"; do
-  echo "[slang-screen] compiling $entry"
-  "${SLANGC_CMD[@]}" "$SLANG_SRC_ARG" -target metal -entry "$entry" -stage compute -o "$OUT_DIR_ARG/$entry.metal"
+if [[ ${#entries[@]} -eq 0 ]]; then
+  echo "[slang-screen] no active screen-space entries; skipping compile"
+fi
 
-  echo "[slang-screen] converting $entry -> MLX JSON"
-  input_names=""
-  output_names=""
-  case "$entry" in
-    gaussian_screen_cov3d_backward)
-      input_names="cov3d_scales_1,cov3d_rotations_1,cov3d_cotCov3d_1,cov3d_counts_1"
-      output_names="cov3d_gradScales_1,cov3d_gradRotations_1"
-      ;;
-    *)
-      echo "Unknown entry: $entry" >&2
-      exit 1
-      ;;
-  esac
+if [[ ${#entries[@]} -gt 0 ]]; then
+  for entry in "${entries[@]}"; do
+    echo "[slang-screen] compiling $entry"
+    "${SLANGC_CMD[@]}" "$SLANG_SRC_ARG" -target metal -entry "$entry" -stage compute -o "$OUT_DIR_ARG/$entry.metal"
 
-  python3 "$CONVERTER" \
-    --metal "$OUT_DIR/$entry.metal" \
-    --entry "$entry" \
-    --kernel-name "${entry}_slang_v1" \
-    --input-names "$input_names" \
-    --output-names "$output_names" \
-    --swift-out "$OUT_DIR/${entry}_mlx.swift" \
-    --json-out "$OUT_DIR/${entry}_mlx.json"
-done
+    echo "[slang-screen] converting $entry -> MLX JSON"
+    input_names=""
+    output_names=""
+    case "$entry" in
+      gaussian_screen_cov3d_backward)
+        input_names="cov3d_scales_1,cov3d_rotations_1,cov3d_cotCov3d_1,cov3d_counts_1"
+        output_names="cov3d_gradScales_1,cov3d_gradRotations_1"
+        ;;
+      *)
+        echo "Unknown entry: $entry" >&2
+        exit 1
+        ;;
+    esac
+
+    python3 "$CONVERTER" \
+      --metal "$OUT_DIR/$entry.metal" \
+      --entry "$entry" \
+      --kernel-name "${entry}_slang_v1" \
+      --input-names "$input_names" \
+      --output-names "$output_names" \
+      --swift-out "$OUT_DIR/${entry}_mlx.swift" \
+      --json-out "$OUT_DIR/${entry}_mlx.json"
+  done
+fi
 
 mkdir -p "$BUNDLE_DIR"
-for entry in "${entries[@]}"; do
-  cp "$OUT_DIR/${entry}_mlx.json" "$BUNDLE_DIR/"
-done
+if [[ ${#entries[@]} -gt 0 ]]; then
+  for entry in "${entries[@]}"; do
+    cp "$OUT_DIR/${entry}_mlx.json" "$BUNDLE_DIR/"
+  done
+fi
 
 echo "[slang-screen] done"
 echo "[slang-screen] generated JSON copied to: $BUNDLE_DIR"

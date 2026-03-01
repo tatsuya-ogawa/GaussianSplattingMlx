@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate active screen-space JSON from Slang source.
+"""Run active screen-space Slang build and report generated JSON artifacts.
 
 This script intentionally does not embed Metal shader source. It delegates to
 `build_screen_space_slang_mlx.sh`, which compiles active entries in
@@ -46,6 +46,9 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
+    for stale_json in out_dir.glob("*_mlx.json"):
+        stale_json.unlink(missing_ok=True)
+
     build_script = repo_root / "scripts" / "slang" / "build_screen_space_slang_mlx.sh"
 
     temp_bundle_dir: pathlib.Path | None = None
@@ -68,11 +71,13 @@ def main() -> int:
         if temp_bundle_dir is not None:
             shutil.rmtree(temp_bundle_dir, ignore_errors=True)
 
-    active_json = out_dir / "gaussian_screen_cov3d_backward_mlx.json"
-    if not active_json.exists():
-        raise FileNotFoundError(f"Expected screen-space JSON was not generated: {active_json}")
-
-    print(f"Generated from Slang: {active_json}")
+    generated_jsons = sorted(out_dir.glob("*_mlx.json"))
+    if generated_jsons:
+        print("Generated from Slang:")
+        for json_path in generated_jsons:
+            print(f"  - {json_path}")
+    else:
+        print("No active screen-space Slang entries; no JSON generated.")
     if bundle_dir != out_dir:
         print(f"Copied *_mlx.json to: {bundle_dir}")
 

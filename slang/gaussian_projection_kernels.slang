@@ -1,81 +1,10 @@
 // gaussian_projection_kernels.slang
 //
 // Active kernels:
-// - projection_ndc_backward
 // - gaussian_projection_screen_fused_forward
 // - gaussian_projection_screen_fused_backward
 
 import gaussian_projection_screen_shared;
-
-// ---------------------------------------------------------------------------
-// projection_ndc_backward
-// ---------------------------------------------------------------------------
-StructuredBuffer<float> proj_points;         // [N*3]
-StructuredBuffer<float> proj_viewMatrix;     // [16] (4x4 column-major)
-StructuredBuffer<float> proj_projMatrix;     // [16] (4x4 column-major)
-StructuredBuffer<uint>  proj_counts;         // [1]: pointCount
-
-// Backward inputs (cotangents)
-StructuredBuffer<float> proj_cotMeanNdc;     // [N*4]
-StructuredBuffer<float> proj_cotPView;       // [N*4]
-
-// Backward outputs (gradients)
-RWStructuredBuffer<float> proj_gradPoints;   // [N*3]
-
-// ---------------------------------------------------------------------------
-// projection_ndc_backward
-// ---------------------------------------------------------------------------
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void projection_ndc_backward(uint3 tid : SV_DispatchThreadID)
-{
-    uint p = tid.x;
-    if (p >= proj_counts[0])
-    {
-        return;
-    }
-
-    uint pBase = p * 3;
-    float3 point = float3(
-        proj_points[pBase + 0],
-        proj_points[pBase + 1],
-        proj_points[pBase + 2]
-    );
-    float3 pointDiff = float3(0.0);
-    DifferentialPair<float3> dpPoint = diffPair(point, pointDiff);
-
-    uint gBase = p * 4;
-    ProjectionNdcOutputs cotOutputs;
-    cotOutputs.meanNdc = float4(
-        proj_cotMeanNdc[gBase + 0],
-        proj_cotMeanNdc[gBase + 1],
-        proj_cotMeanNdc[gBase + 2],
-        proj_cotMeanNdc[gBase + 3]
-    );
-    cotOutputs.pView = float4(
-        proj_cotPView[gBase + 0],
-        proj_cotPView[gBase + 1],
-        proj_cotPView[gBase + 2],
-        proj_cotPView[gBase + 3]
-    );
-
-    bwd_diff(evaluateProjectionNdcOutputs)(
-        dpPoint,
-        proj_viewMatrix[0], proj_viewMatrix[1], proj_viewMatrix[2], proj_viewMatrix[3],
-        proj_viewMatrix[4], proj_viewMatrix[5], proj_viewMatrix[6], proj_viewMatrix[7],
-        proj_viewMatrix[8], proj_viewMatrix[9], proj_viewMatrix[10], proj_viewMatrix[11],
-        proj_viewMatrix[12], proj_viewMatrix[13], proj_viewMatrix[14], proj_viewMatrix[15],
-        proj_projMatrix[0], proj_projMatrix[1], proj_projMatrix[2], proj_projMatrix[3],
-        proj_projMatrix[4], proj_projMatrix[5], proj_projMatrix[6], proj_projMatrix[7],
-        proj_projMatrix[8], proj_projMatrix[9], proj_projMatrix[10], proj_projMatrix[11],
-        proj_projMatrix[12], proj_projMatrix[13], proj_projMatrix[14], proj_projMatrix[15],
-        cotOutputs
-    );
-
-    proj_gradPoints[pBase + 0] = dpPoint.d.x;
-    proj_gradPoints[pBase + 1] = dpPoint.d.y;
-    proj_gradPoints[pBase + 2] = dpPoint.d.z;
-}
 
 // ---------------------------------------------------------------------------
 // gaussian_projection_screen_fused_forward
