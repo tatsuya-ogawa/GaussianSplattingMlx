@@ -15,19 +15,19 @@
   "buffer_parameters": [
     {
       "name": "tr_sortedKeysHigh_1",
-      "buffer_index": 14,
+      "buffer_index": 24,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "tr_counts_1",
-      "buffer_index": 15,
+      "buffer_index": 25,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "tr_tileRanges_1",
-      "buffer_index": 16,
+      "buffer_index": 26,
       "role": "output",
       "type": "uint device*"
     }

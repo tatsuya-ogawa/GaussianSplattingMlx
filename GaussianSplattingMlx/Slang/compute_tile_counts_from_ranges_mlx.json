@@ -15,19 +15,19 @@
   "buffer_parameters": [
     {
       "name": "ctc_tileRanges_1",
-      "buffer_index": 17,
+      "buffer_index": 27,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "ctc_tileCountArgs_1",
-      "buffer_index": 18,
+      "buffer_index": 28,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "ctc_tileCounts_1",
-      "buffer_index": 19,
+      "buffer_index": 29,
       "role": "output",
       "type": "uint device*"
     }

@@ -16,25 +16,25 @@
   "buffer_parameters": [
     {
       "name": "bpi_sortedGaussIdx_1",
-      "buffer_index": 20,
+      "buffer_index": 30,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "bpi_tileRanges_1",
-      "buffer_index": 21,
+      "buffer_index": 31,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "bpi_packArgs_1",
-      "buffer_index": 22,
+      "buffer_index": 32,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "bpi_packedTileIndices_1",
-      "buffer_index": 23,
+      "buffer_index": 33,
       "role": "output",
       "type": "int device*"
     }
