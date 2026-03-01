@@ -377,6 +377,15 @@ struct ProjectionScreenGradOutputs : IDifferentiable
     float4 conic;
 };
 
+struct ProjectionScreenFusedCoreOutputs : IDifferentiable
+{
+    float depth;
+    float2 means2d;
+    float3 color;
+    Cov2dValues cov2d;
+    float4 conic;
+};
+
 [Differentiable]
 ProjectionScreenGradOutputs evaluateProjectionScreenGradOutputs(
     float2 meanNdcXY,
@@ -420,6 +429,94 @@ ProjectionScreenGradOutputs evaluateProjectionScreenGradOutputs(
         fovX, fovY, focalX, focalY
     );
     outVals.conic = inverseCov2d(outVals.cov2d);
+    return outVals;
+}
+
+[Differentiable]
+ProjectionScreenFusedCoreOutputs evaluateProjectionScreenFusedCoreOutputs(
+    float3 scales,
+    float4 rotation,
+    float3 means3d,
+    float3 cameraCenter,
+    float3 shCoeffs[25],
+    no_diff int degree,
+    no_diff float view00,
+    no_diff float view01,
+    no_diff float view02,
+    no_diff float view03,
+    no_diff float view10,
+    no_diff float view11,
+    no_diff float view12,
+    no_diff float view13,
+    no_diff float view20,
+    no_diff float view21,
+    no_diff float view22,
+    no_diff float view23,
+    no_diff float view30,
+    no_diff float view31,
+    no_diff float view32,
+    no_diff float view33,
+    no_diff float proj00,
+    no_diff float proj01,
+    no_diff float proj02,
+    no_diff float proj03,
+    no_diff float proj10,
+    no_diff float proj11,
+    no_diff float proj12,
+    no_diff float proj13,
+    no_diff float proj20,
+    no_diff float proj21,
+    no_diff float proj22,
+    no_diff float proj23,
+    no_diff float proj30,
+    no_diff float proj31,
+    no_diff float proj32,
+    no_diff float proj33,
+    no_diff float fovX,
+    no_diff float fovY,
+    no_diff float focalX,
+    no_diff float focalY,
+    no_diff float imageWidth,
+    no_diff float imageHeight
+)
+{
+    ProjectionNdcOutputs projectionNdc = evaluateProjectionNdcOutputs(
+        means3d,
+        view00, view01, view02, view03,
+        view10, view11, view12, view13,
+        view20, view21, view22, view23,
+        view30, view31, view32, view33,
+        proj00, proj01, proj02, proj03,
+        proj10, proj11, proj12, proj13,
+        proj20, proj21, proj22, proj23,
+        proj30, proj31, proj32, proj33
+    );
+
+    Cov3dValues cov3d = buildCov3dFromScaleRotation(
+        scales.x, scales.y, scales.z,
+        rotation.x, rotation.y, rotation.z, rotation.w
+    );
+
+    ProjectionScreenGradOutputs screenOut = evaluateProjectionScreenGradOutputs(
+        float2(projectionNdc.meanNdc.x, projectionNdc.meanNdc.y),
+        means3d,
+        cameraCenter,
+        shCoeffs,
+        cov3d,
+        degree,
+        view00, view01, view02,
+        view10, view11, view12,
+        view20, view21, view22,
+        view30, view31, view32,
+        fovX, fovY, focalX, focalY, imageWidth, imageHeight
+    );
+
+    ProjectionScreenFusedCoreOutputs outVals;
+    outVals.depth = projectionNdc.pView.z;
+    outVals.means2d = screenOut.means2d;
+    outVals.color = screenOut.color;
+    outVals.cov2d = screenOut.cov2d;
+    outVals.conic = screenOut.conic;
     return outVals;
 }
 
