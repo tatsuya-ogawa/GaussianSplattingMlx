@@ -11,7 +11,7 @@ struct ProjectionValues
     float visibleMask;
 };
 
-struct Cov3dValues
+struct Cov3dValues : IDifferentiable
 {
     float c00;
     float c01;
@@ -24,13 +24,48 @@ struct Cov3dValues
     float c22;
 };
 
-struct Cov2dValues
+struct Cov2dValues : IDifferentiable
 {
     float c00;
     float c01;
     float c10;
     float c11;
 };
+
+Cov2dValues makeCov2d(float c00, float c01, float c10, float c11)
+{
+    Cov2dValues outVals;
+    outVals.c00 = c00;
+    outVals.c01 = c01;
+    outVals.c10 = c10;
+    outVals.c11 = c11;
+    return outVals;
+}
+
+Cov3dValues zeroCov3d()
+{
+    Cov3dValues outVals;
+    outVals.c00 = 0.0;
+    outVals.c01 = 0.0;
+    outVals.c02 = 0.0;
+    outVals.c10 = 0.0;
+    outVals.c11 = 0.0;
+    outVals.c12 = 0.0;
+    outVals.c20 = 0.0;
+    outVals.c21 = 0.0;
+    outVals.c22 = 0.0;
+    return outVals;
+}
+
+Cov2dValues addCov2d(Cov2dValues a, Cov2dValues b)
+{
+    Cov2dValues outVals;
+    outVals.c00 = a.c00 + b.c00;
+    outVals.c01 = a.c01 + b.c01;
+    outVals.c10 = a.c10 + b.c10;
+    outVals.c11 = a.c11 + b.c11;
+    return outVals;
+}
 
 ProjectionValues projectFromHomogeneous(
     float pv0,
@@ -60,7 +95,8 @@ ProjectionValues projectFromHomogeneous(
     return outVals;
 }
 
-float2 ndcToScreen(float ndcX, float ndcY, float imageWidth, float imageHeight)
+[Differentiable]
+float2 ndcToScreen(float ndcX, float ndcY, no_diff float imageWidth, no_diff float imageHeight)
 {
     float sx = ((ndcX + 1.0f) * imageWidth - 1.0f) * 0.5f;
     float sy = ((ndcY + 1.0f) * imageHeight - 1.0f) * 0.5f;
@@ -119,27 +155,28 @@ Cov3dValues buildCov3dFromScaleRotation(
     return outVals;
 }
 
+[Differentiable]
 Cov2dValues buildCov2dFromCov3d(
     float m0,
     float m1,
     float m2,
     Cov3dValues cov3d,
-    float a00,
-    float a01,
-    float a02,
-    float a10,
-    float a11,
-    float a12,
-    float a20,
-    float a21,
-    float a22,
-    float t30,
-    float t31,
-    float t32,
-    float fovX,
-    float fovY,
-    float focalX,
-    float focalY
+    no_diff float a00,
+    no_diff float a01,
+    no_diff float a02,
+    no_diff float a10,
+    no_diff float a11,
+    no_diff float a12,
+    no_diff float a20,
+    no_diff float a21,
+    no_diff float a22,
+    no_diff float t30,
+    no_diff float t31,
+    no_diff float t32,
+    no_diff float fovX,
+    no_diff float fovY,
+    no_diff float focalX,
+    no_diff float focalY
 )
 {
     Cov2dValues outVals;
@@ -193,6 +230,7 @@ Cov2dValues buildCov2dFromCov3d(
     return outVals;
 }
 
+[Differentiable]
 float4 inverseCov2d(Cov2dValues cov2d)
 {
     float det = cov2d.c00 * cov2d.c11 - cov2d.c01 * cov2d.c10;
@@ -202,6 +240,70 @@ float4 inverseCov2d(Cov2dValues cov2d)
         -cov2d.c10 / det,
         cov2d.c00 / det
     );
+}
+
+[Differentiable]
+float3 evaluateShColorFromPoint(
+    float3 means3d,
+    float3 cameraCenter,
+    float3 shCoeffs[25],
+    no_diff int degree
+)
+{
+    float x = means3d.x - cameraCenter.x;
+    float y = means3d.y - cameraCenter.y;
+    float z = means3d.z - cameraCenter.z;
+
+    float3 colorAccum = 0.28209479177387814 * shCoeffs[0];
+    if (degree > 0)
+    {
+        colorAccum += (-0.4886025119029199 * y) * shCoeffs[1];
+        colorAccum += (0.4886025119029199 * z) * shCoeffs[2];
+        colorAccum += (-0.4886025119029199 * x) * shCoeffs[3];
+
+        if (degree > 1)
+        {
+            float xx = x * x;
+            float yy = y * y;
+            float zz = z * z;
+            float xy = x * y;
+            float yz = y * z;
+            float xz = x * z;
+
+            colorAccum += (1.0925484305920792 * xy) * shCoeffs[4];
+            colorAccum += (-1.0925484305920792 * yz) * shCoeffs[5];
+            colorAccum += (0.31539156525252005 * (2.0 * zz - xx - yy)) * shCoeffs[6];
+            colorAccum += (-1.0925484305920792 * xz) * shCoeffs[7];
+            colorAccum += (0.5462742152960396 * (xx - yy)) * shCoeffs[8];
+
+            if (degree > 2)
+            {
+                colorAccum += (-0.5900435899266435 * y * (3.0 * xx - yy)) * shCoeffs[9];
+                colorAccum += (2.890611442640554 * xy * z) * shCoeffs[10];
+                colorAccum += (-0.4570457994644658 * y * (4.0 * zz - xx - yy)) * shCoeffs[11];
+                colorAccum += (0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy)) * shCoeffs[12];
+                colorAccum += (-0.4570457994644658 * x * (4.0 * zz - xx - yy)) * shCoeffs[13];
+                colorAccum += (1.445305721320277 * z * (xx - yy)) * shCoeffs[14];
+                colorAccum += (-0.5900435899266435 * x * (xx - 3.0 * yy)) * shCoeffs[15];
+
+                if (degree > 3)
+                {
+                    colorAccum += (2.5033429417967046 * xy * (xx - yy)) * shCoeffs[16];
+                    colorAccum += (-1.7701307697799304 * yz * (3.0 * xx - yy)) * shCoeffs[17];
+                    colorAccum += (0.9461746957575601 * xy * (7.0 * zz - 1.0)) * shCoeffs[18];
+                    colorAccum += (-0.6690465435572892 * yz * (7.0 * zz - 3.0)) * shCoeffs[19];
+                    colorAccum += (0.10578554691520431 * (zz * (35.0 * zz - 30.0) + 3.0)) * shCoeffs[20];
+                    colorAccum += (-0.6690465435572892 * xz * (7.0 * zz - 3.0)) * shCoeffs[21];
+                    colorAccum += (0.47308734787878004 * (xx - yy) * (7.0 * zz - 1.0)) * shCoeffs[22];
+                    colorAccum += (-1.7701307697799304 * xz * (xx - 3.0 * yy)) * shCoeffs[23];
+                    colorAccum += (0.6258357354491761 * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy))) * shCoeffs[24];
+                }
+            }
+        }
+    }
+
+    colorAccum += 0.5;
+    return max(colorAccum, float3(0.0));
 }
 
 float computeRadiusFromCov2d(Cov2dValues cov2d)
