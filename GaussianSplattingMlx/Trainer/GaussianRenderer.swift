@@ -38,6 +38,8 @@ class GaussianRenderer {
         static let cov2d = 3
         static let conic = 4
         static let radii = 5
+        static let rectMin = 6
+        static let rectMax = 7
     }
     
     private enum PackedGaussianIndex {
@@ -549,10 +551,12 @@ class GaussianRenderer {
                 outputShapes: [
                     [paddedCount, 2], [paddedCount], [paddedCount, 3],
                     [paddedCount, 2, 2], [paddedCount, 2, 2], [paddedCount],
+                    [paddedCount, 2], [paddedCount, 2],
                 ],
                 outputDTypes: [
                     means3d.dtype, means3d.dtype, means3d.dtype,
                     means3d.dtype, means3d.dtype, means3d.dtype,
+                    means3d.dtype, means3d.dtype,
                 ]
             )
 
@@ -563,6 +567,8 @@ class GaussianRenderer {
                 Self.sliceFirstDim(outputs[3], count: activeCount),  // cov2d
                 Self.sliceFirstDim(outputs[4], count: activeCount),  // conic
                 Self.sliceFirstDim(outputs[5], count: activeCount),  // radii
+                Self.sliceFirstDim(outputs[6], count: activeCount),  // rectMin
+                Self.sliceFirstDim(outputs[7], count: activeCount),  // rectMax
             ]
         }
 
@@ -621,6 +627,7 @@ class GaussianRenderer {
         let cotCov2d = cotangents[3]
         let cotConic = cotangents[4]
         // cotangents[5] = radii cotangent (ignored; treated as stopGradient)
+        // cotangents[6], cotangents[7] = rectMin/rectMax cotangents (ignored; stopGradient path)
 
         let activeCount = means3d.shape[0]
         let paddedCount = Swift.max(activeCount, screenSpaceCustomMinPointCount)
@@ -735,7 +742,8 @@ class GaussianRenderer {
         depths: MLXArray,
         radii: MLXArray,
         conic: MLXArray,
-        inputIsDepthSorted: Bool = false
+        inputIsDepthSorted: Bool = false,
+        rect: (MLXArray, MLXArray)? = nil
     ) -> (
         render: MLXArray,
         depth: MLXArray,
@@ -753,7 +761,8 @@ class GaussianRenderer {
             depths: depths,
             radii: radii,
             conic: conic,
-            inputIsDepthSorted: inputIsDepthSorted
+            inputIsDepthSorted: inputIsDepthSorted,
+            rect: rect
         )
     }
 
@@ -767,7 +776,8 @@ class GaussianRenderer {
         depths: MLXArray,
         radii: MLXArray,
         conic: MLXArray,
-        inputIsDepthSorted: Bool = false
+        inputIsDepthSorted: Bool = false,
+        rect: (MLXArray, MLXArray)? = nil
     ) -> (
         render: MLXArray,
         depth: MLXArray,
@@ -780,13 +790,14 @@ class GaussianRenderer {
             imageWidth == self.W && imageHeight == self.H,
             "Renderer image size mismatch: expected (\(self.W), \(self.H)), got (\(imageWidth), \(imageHeight))"
         )
-        Logger.shared.debug("get_rect")
-        let rect = get_rect(
-            pix_coord: means2d,
-            radii: radii,
-            width: imageWidth,
-            height: imageHeight
-        )
+        let rectValue =
+            rect
+            ?? get_rect(
+                pix_coord: means2d,
+                radii: radii,
+                width: imageWidth,
+                height: imageHeight
+            )
         let conicValues = conic
         let packedGaussians = buildPackedGaussians(
             means2d: means2d,
@@ -796,7 +807,7 @@ class GaussianRenderer {
             depths: depths
         )
         guard let globalTileSliceInfo = buildGlobalTileSliceInfo(
-            rect: rect,
+            rect: rectValue,
             radii: radii,
             depths: depths
         ) else {
@@ -856,6 +867,8 @@ class GaussianRenderer {
         let cov2d = outputs[ProjectionScreenFusedOutputIndex.cov2d]
         let conic = outputs[ProjectionScreenFusedOutputIndex.conic]
         let radii = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.radii])
+        let rectMin = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.rectMin])
+        let rectMax = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.rectMax])
         Logger.shared.debug("render")
         let rets = render(
             imageWidth: imageWidth,
@@ -866,7 +879,8 @@ class GaussianRenderer {
             opacity: opacity,
             depths: depths,
             radii: radii,
-            conic: conic
+            conic: conic,
+            rect: (rectMin, rectMax)
         )
         return rets
     }
@@ -908,6 +922,8 @@ class GaussianRenderer {
         let cov2d = outputs[ProjectionScreenFusedOutputIndex.cov2d]
         let conic = outputs[ProjectionScreenFusedOutputIndex.conic]
         let radii = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.radii])
+        let rectMin = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.rectMin])
+        let rectMax = MLX.stopGradient(outputs[ProjectionScreenFusedOutputIndex.rectMax])
         Logger.shared.debug("render")
         let rets = render(
             camera: camera,
@@ -917,7 +933,8 @@ class GaussianRenderer {
             opacity: opacity,
             depths: depths,
             radii: radii,
-            conic: conic
+            conic: conic,
+            rect: (rectMin, rectMax)
         )
         return rets
     }
