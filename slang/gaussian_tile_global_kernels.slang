@@ -416,6 +416,56 @@ RWStructuredBuffer<float> gtf_outDepth; // [pixelCount]
 RWStructuredBuffer<float> gtf_outAlpha; // [pixelCount]
 RWStructuredBuffer<uint> gtf_outLastContrib; // [pixelCount]
 
+struct TileGlobalBlendStepOutputs : IDifferentiable
+{
+    float colorX;
+    float colorY;
+    float colorZ;
+    float depth;
+    float alphaAcc;
+};
+
+[Differentiable]
+float tileGlobalAlphaFromGaussian(
+    float meanX,
+    float meanY,
+    float c00,
+    float c01,
+    float c10,
+    float c11,
+    float opacity,
+    no_diff float px,
+    no_diff float py
+)
+{
+    float dx = px - meanX;
+    float dy = py - meanY;
+    float dxdy = dx * dy;
+    float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
+    float raw = exp(exponent) * opacity;
+    return raw > 0.99 ? 0.99 : raw;
+}
+
+[Differentiable]
+TileGlobalBlendStepOutputs tileGlobalBlendStep(
+    float T_i,
+    float alpha,
+    float colorX,
+    float colorY,
+    float colorZ,
+    float depth
+)
+{
+    float contrib = T_i * alpha;
+    TileGlobalBlendStepOutputs outVals;
+    outVals.colorX = contrib * colorX;
+    outVals.colorY = contrib * colorY;
+    outVals.colorZ = contrib * colorZ;
+    outVals.depth = contrib * depth;
+    outVals.alphaAcc = contrib;
+    return outVals;
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
@@ -475,19 +525,31 @@ void gaussian_tile_global_forward(uint3 tid : SV_DispatchThreadID)
         float opacity = gtf_packedGaussians[gBase + 9];
         float depth = gtf_packedGaussians[gBase + 10];
 
-        float dx = px - meanX;
-        float dy = py - meanY;
-        float dxdy = dx * dy;
-        float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-        float raw = exp(exponent) * opacity;
-        float alpha = raw > 0.99 ? 0.99 : raw;
+        float alpha = tileGlobalAlphaFromGaussian(
+            meanX,
+            meanY,
+            c00,
+            c01,
+            c10,
+            c11,
+            opacity,
+            px,
+            py
+        );
 
-        float contrib = T * alpha;
-        accAlpha += contrib;
-        accumColorX += contrib * colorX;
-        accumColorY += contrib * colorY;
-        accumColorZ += contrib * colorZ;
-        accumDepth += contrib * depth;
+        TileGlobalBlendStepOutputs stepVals = tileGlobalBlendStep(
+            T,
+            alpha,
+            colorX,
+            colorY,
+            colorZ,
+            depth
+        );
+        accAlpha += stepVals.alphaAcc;
+        accumColorX += stepVals.colorX;
+        accumColorY += stepVals.colorY;
+        accumColorZ += stepVals.colorZ;
+        accumDepth += stepVals.depth;
         T *= (1.0 - alpha);
         if (T < 1e-4)
         {
@@ -651,14 +713,19 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 float colorX = sgColorX[local];
                 float colorY = sgColorY[local];
                 float colorZ = sgColorZ[local];
+                float opacity = sgOpacity[local];
                 float depth = sgDepth[local];
-                float dx = px - meanX;
-                float dy = py - meanY;
-                float dxdy = dx * dy;
-                float exponent = -0.5 * (dx * dx * c00 + dy * dy * c11 + dxdy * c01 + dxdy * c10);
-                float expVal = exp(exponent);
-                float raw = expVal * sgOpacity[local];
-                float alpha = raw > 0.99 ? 0.99 : raw;
+                float alpha = tileGlobalAlphaFromGaussian(
+                    meanX,
+                    meanY,
+                    c00,
+                    c01,
+                    c10,
+                    c11,
+                    opacity,
+                    px,
+                    py
+                );
 
                 float denom = 1.0 - alpha;
                 if (denom < 1e-6) { denom = 1e-6; }
@@ -666,33 +733,71 @@ void gaussian_tile_global_backward(uint3 tid : SV_DispatchThreadID, uint3 gtid :
                 // Recover transmittance before this gaussian
                 float T_i = T / denom;
                 float contrib = T_i * alpha;
-
-                float cVal = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + gAlpha + whiteTerm;
-                float gradAlpha = cVal * T_i - suffix / denom;
+                float cotAlphaAcc = gAlpha + whiteTerm;
+                float cVal = gColorX * colorX + gColorY * colorY + gColorZ * colorZ + gDepth * depth + cotAlphaAcc;
+                float suffixBefore = suffix;
 
                 // Accumulate suffix for next (earlier) gaussian
                 suffix += cVal * contrib;
                 T = T_i;
 
-                g_depth = gDepth * contrib;
-                g_colorX = gColorX * contrib;
-                g_colorY = gColorY * contrib;
-                g_colorZ = gColorZ * contrib;
+                DifferentialPair<float> dpTi = diffPair(T_i, 0.0);
+                DifferentialPair<float> dpAlpha = diffPair(alpha, 0.0);
+                DifferentialPair<float> dpColorX = diffPair(colorX, g_colorX);
+                DifferentialPair<float> dpColorY = diffPair(colorY, g_colorY);
+                DifferentialPair<float> dpColorZ = diffPair(colorZ, g_colorZ);
+                DifferentialPair<float> dpDepth = diffPair(depth, g_depth);
+                TileGlobalBlendStepOutputs cotBlend;
+                cotBlend.colorX = gColorX;
+                cotBlend.colorY = gColorY;
+                cotBlend.colorZ = gColorZ;
+                cotBlend.depth = gDepth;
+                cotBlend.alphaAcc = cotAlphaAcc;
+                bwd_diff(tileGlobalBlendStep)(
+                    dpTi,
+                    dpAlpha,
+                    dpColorX,
+                    dpColorY,
+                    dpColorZ,
+                    dpDepth,
+                    cotBlend
+                );
+                g_colorX = dpColorX.d;
+                g_colorY = dpColorY.d;
+                g_colorZ = dpColorZ.d;
+                g_depth = dpDepth.d;
 
-                if (raw <= 0.99)
-                {
-                    g_opacity = gradAlpha * expVal;
-                    float gradExponent = gradAlpha * raw;
-                    g_c00 = gradExponent * (-0.5 * dx * dx);
-                    float gradOffDiag = gradExponent * (-0.5 * dxdy);
-                    g_c01 = gradOffDiag;
-                    g_c10 = gradOffDiag;
-                    g_c11 = gradExponent * (-0.5 * dy * dy);
-                    float c01sum = c01 + c10;
-                    float gradDy = gradExponent * (-dy * c11 - 0.5 * dx * c01sum);
-                    g_meanX = -(gradExponent * (-dx * c00 - 0.5 * dy * c01sum));
-                    g_meanY = -gradDy;
-                }
+                float gradAlpha = dpAlpha.d - suffixBefore / denom;
+
+                // Hybrid AD: keep tile-level reverse traversal/reduction handwritten,
+                // and let AD differentiate the per-gaussian alpha math.
+                DifferentialPair<float> dpMeanX = diffPair(meanX, g_meanX);
+                DifferentialPair<float> dpMeanY = diffPair(meanY, g_meanY);
+                DifferentialPair<float> dpC00 = diffPair(c00, g_c00);
+                DifferentialPair<float> dpC01 = diffPair(c01, g_c01);
+                DifferentialPair<float> dpC10 = diffPair(c10, g_c10);
+                DifferentialPair<float> dpC11 = diffPair(c11, g_c11);
+                DifferentialPair<float> dpOpacity = diffPair(opacity, g_opacity);
+                bwd_diff(tileGlobalAlphaFromGaussian)(
+                    dpMeanX,
+                    dpMeanY,
+                    dpC00,
+                    dpC01,
+                    dpC10,
+                    dpC11,
+                    dpOpacity,
+                    px,
+                    py,
+                    gradAlpha
+                );
+
+                g_meanX = dpMeanX.d;
+                g_meanY = dpMeanY.d;
+                g_c00 = dpC00.d;
+                g_c01 = dpC01.d;
+                g_c10 = dpC10.d;
+                g_c11 = dpC11.d;
+                g_opacity = dpOpacity.d;
             }
 
             // SIMD group reduction: sum gradients across 32 threads

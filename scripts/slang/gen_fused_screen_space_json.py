@@ -2,8 +2,8 @@
 """Run active screen-space Slang build and report generated JSON artifacts.
 
 This script intentionally does not embed Metal shader source. It delegates to
-`build_screen_space_slang_mlx.sh`, which compiles active entries in
-`slang/gaussian_screen_space_kernels.slang` and runs the MLX JSON converter.
+`build_screen_space_slang_mlx.sh`. If no active screen-space entries exist,
+the build script is a no-op and this script reports no generated JSON.
 """
 
 from __future__ import annotations
