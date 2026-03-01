@@ -1,34 +1,19 @@
 // gaussian_projection_kernels.slang
 //
-// Projection NDC (forward/backward) and radius-with-mask (forward-only) kernels.
-//
-// projection_ndc_forward:
-//   points [N,3] x viewMatrix [4,4] x projMatrix [4,4]
-//   -> mean_ndc [N,4], p_view [N,4], visibleMask [N]
-//
-// projection_ndc_backward:
-//   VJP: cotangent of mean_ndc + cotangent of p_view -> grad_points [N,3]
-//   (viewMatrix/projMatrix have no gradient; visibleMask is stopGradient)
-//
-// get_radius_mask_forward:
-//   cov2d [N,2,2] (flat [N,4]) + visibleMask [N] -> radii [N]
-//   Computes max eigenvalue of cov2d, radius = 3*ceil(sqrt(lambda_max)),
-//   then masks by visibility. No backward needed (always under stopGradient).
+// Active kernels:
+// - projection_ndc_backward
+// - gaussian_projection_screen_fused_forward
+// - gaussian_projection_screen_fused_backward
 
 import gaussian_projection_screen_shared;
 
 // ---------------------------------------------------------------------------
-// projection_ndc_forward
+// projection_ndc_backward
 // ---------------------------------------------------------------------------
 StructuredBuffer<float> proj_points;         // [N*3]
 StructuredBuffer<float> proj_viewMatrix;     // [16] (4x4 column-major)
 StructuredBuffer<float> proj_projMatrix;     // [16] (4x4 column-major)
 StructuredBuffer<uint>  proj_counts;         // [1]: pointCount
-
-// Forward outputs
-RWStructuredBuffer<float> proj_outMeanNdc;   // [N*4]
-RWStructuredBuffer<float> proj_outPView;     // [N*4]
-RWStructuredBuffer<float> proj_outVisibleMask; // [N]
 
 // Backward inputs (cotangents)
 StructuredBuffer<float> proj_cotMeanNdc;     // [N*4]
@@ -36,46 +21,6 @@ StructuredBuffer<float> proj_cotPView;       // [N*4]
 
 // Backward outputs (gradients)
 RWStructuredBuffer<float> proj_gradPoints;   // [N*3]
-
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void projection_ndc_forward(uint3 tid : SV_DispatchThreadID)
-{
-    uint p = tid.x;
-    if (p >= proj_counts[0]) return;
-
-    uint pBase = p * 3;
-    float px = proj_points[pBase];
-    float py = proj_points[pBase + 1];
-    float pz = proj_points[pBase + 2];
-
-    // Homogeneous point * viewMatrix  (column-major: row i of viewMatrix = indices [i, i+4, i+8, i+12])
-    float pv0 = px * proj_viewMatrix[0] + py * proj_viewMatrix[4] + pz * proj_viewMatrix[8]  + proj_viewMatrix[12];
-    float pv1 = px * proj_viewMatrix[1] + py * proj_viewMatrix[5] + pz * proj_viewMatrix[9]  + proj_viewMatrix[13];
-    float pv2 = px * proj_viewMatrix[2] + py * proj_viewMatrix[6] + pz * proj_viewMatrix[10] + proj_viewMatrix[14];
-    float pv3 = px * proj_viewMatrix[3] + py * proj_viewMatrix[7] + pz * proj_viewMatrix[11] + proj_viewMatrix[15];
-
-    // p_view * projMatrix
-    float pc0 = pv0 * proj_projMatrix[0] + pv1 * proj_projMatrix[4] + pv2 * proj_projMatrix[8]  + pv3 * proj_projMatrix[12];
-    float pc1 = pv0 * proj_projMatrix[1] + pv1 * proj_projMatrix[5] + pv2 * proj_projMatrix[9]  + pv3 * proj_projMatrix[13];
-    float pc2 = pv0 * proj_projMatrix[2] + pv1 * proj_projMatrix[6] + pv2 * proj_projMatrix[10] + pv3 * proj_projMatrix[14];
-    float pc3 = pv0 * proj_projMatrix[3] + pv1 * proj_projMatrix[7] + pv2 * proj_projMatrix[11] + pv3 * proj_projMatrix[15];
-
-    float w_inv = 1.0f / (pc3 + 0.000001f);
-
-    uint outBase = p * 4;
-    proj_outMeanNdc[outBase]     = pc0 * w_inv;
-    proj_outMeanNdc[outBase + 1] = pc1 * w_inv;
-    proj_outMeanNdc[outBase + 2] = pc2 * w_inv;
-    proj_outMeanNdc[outBase + 3] = pc3 * w_inv;
-
-    proj_outPView[outBase]     = pv0;
-    proj_outPView[outBase + 1] = pv1;
-    proj_outPView[outBase + 2] = pv2;
-    proj_outPView[outBase + 3] = pv3;
-
-    proj_outVisibleMask[p] = (pv2 >= 0.2f) ? 1.0f : 0.0f;
-}
 
 // ---------------------------------------------------------------------------
 // projection_ndc_backward
@@ -148,41 +93,6 @@ void projection_ndc_backward(uint3 tid : SV_DispatchThreadID)
     proj_gradPoints[pBase]     = dph0;
     proj_gradPoints[pBase + 1] = dph1;
     proj_gradPoints[pBase + 2] = dph2;
-}
-
-// ---------------------------------------------------------------------------
-// get_radius_mask_forward  (no backward — always stopGradient)
-// ---------------------------------------------------------------------------
-StructuredBuffer<float> rad_cov2d;           // [N*4] (flattened 2x2)
-StructuredBuffer<float> rad_visibleMask;     // [N]
-StructuredBuffer<uint>  rad_counts;          // [1]: pointCount
-
-RWStructuredBuffer<float> rad_outRadii;      // [N]
-
-[shader("compute")]
-[numthreads(128, 1, 1)]
-void get_radius_mask_forward(uint3 tid : SV_DispatchThreadID)
-{
-    uint p = tid.x;
-    if (p >= rad_counts[0]) return;
-
-    uint covBase = p * 4;
-    float c00 = rad_cov2d[covBase];
-    float c01 = rad_cov2d[covBase + 1];
-    float c10 = rad_cov2d[covBase + 2];
-    float c11 = rad_cov2d[covBase + 3];
-
-    // Max eigenvalue of 2x2 symmetric matrix
-    float det_val = c00 * c11 - c01 * c10;
-    float mid = 0.5f * (c00 + c11);
-    float delta = max(mid * mid - det_val, 1e-5f);
-    float sqrtDelta = sqrt(delta);
-    float lambda_max = mid + sqrtDelta;
-
-    float radius = 3.0f * ceil(sqrt(lambda_max));
-
-    float mask = rad_visibleMask[p];
-    rad_outRadii[p] = radius * mask;
 }
 
 // ---------------------------------------------------------------------------

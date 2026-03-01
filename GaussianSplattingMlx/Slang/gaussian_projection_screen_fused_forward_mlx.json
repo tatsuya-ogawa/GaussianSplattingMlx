@@ -32,121 +32,121 @@
   "buffer_parameters": [
     {
       "name": "fused_scales_1",
-      "buffer_index": 14,
+      "buffer_index": 7,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_rotations_1",
-      "buffer_index": 15,
+      "buffer_index": 8,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_means3d_1",
-      "buffer_index": 16,
+      "buffer_index": 9,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_shs_1",
-      "buffer_index": 17,
+      "buffer_index": 10,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_cameraCenter_1",
-      "buffer_index": 18,
+      "buffer_index": 11,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_viewMatrix_1",
-      "buffer_index": 19,
+      "buffer_index": 12,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_projMatrix_1",
-      "buffer_index": 20,
+      "buffer_index": 13,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_fovX_1",
-      "buffer_index": 21,
+      "buffer_index": 14,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_fovY_1",
-      "buffer_index": 22,
+      "buffer_index": 15,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_focalX_1",
-      "buffer_index": 23,
+      "buffer_index": 16,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_focalY_1",
-      "buffer_index": 24,
+      "buffer_index": 17,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_imageWidth_1",
-      "buffer_index": 25,
+      "buffer_index": 18,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_imageHeight_1",
-      "buffer_index": 26,
+      "buffer_index": 19,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_counts_1",
-      "buffer_index": 27,
+      "buffer_index": 20,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "fused_outMeans2d_1",
-      "buffer_index": 28,
+      "buffer_index": 21,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_outDepths_1",
-      "buffer_index": 29,
+      "buffer_index": 22,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_outColor_1",
-      "buffer_index": 30,
+      "buffer_index": 23,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_outCov2d_1",
-      "buffer_index": 31,
+      "buffer_index": 24,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_outConic_1",
-      "buffer_index": 32,
+      "buffer_index": 25,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_outRadii_1",
-      "buffer_index": 33,
+      "buffer_index": 26,
       "role": "output",
       "type": "float device*"
     }

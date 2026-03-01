@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate fused screen-space JSON from Slang source.
+"""Generate active screen-space JSON from Slang source.
 
 This script intentionally does not embed Metal shader source. It delegates to
-`build_screen_space_slang_mlx.sh`, which compiles `slang/gaussian_screen_space_kernels.slang`
-and runs the MLX JSON converter.
+`build_screen_space_slang_mlx.sh`, which compiles active entries in
+`slang/gaussian_screen_space_kernels.slang` and runs the MLX JSON converter.
 """
 
 from __future__ import annotations
@@ -68,11 +68,11 @@ def main() -> int:
         if temp_bundle_dir is not None:
             shutil.rmtree(temp_bundle_dir, ignore_errors=True)
 
-    fused_json = out_dir / "gaussian_screen_fused_forward_mlx.json"
-    if not fused_json.exists():
-        raise FileNotFoundError(f"Expected fused JSON was not generated: {fused_json}")
+    active_json = out_dir / "gaussian_screen_cov3d_backward_mlx.json"
+    if not active_json.exists():
+        raise FileNotFoundError(f"Expected screen-space JSON was not generated: {active_json}")
 
-    print(f"Generated from Slang: {fused_json}")
+    print(f"Generated from Slang: {active_json}")
     if bundle_dir != out_dir:
         print(f"Copied *_mlx.json to: {bundle_dir}")
 

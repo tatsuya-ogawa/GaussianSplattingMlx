@@ -18,37 +18,37 @@
   "buffer_parameters": [
     {
       "name": "cov3d_scales_1",
-      "buffer_index": 20,
+      "buffer_index": 0,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "cov3d_rotations_1",
-      "buffer_index": 21,
+      "buffer_index": 1,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "cov3d_cotCov3d_1",
-      "buffer_index": 22,
+      "buffer_index": 2,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "cov3d_counts_1",
-      "buffer_index": 23,
+      "buffer_index": 3,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "cov3d_gradScales_1",
-      "buffer_index": 25,
+      "buffer_index": 4,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "cov3d_gradRotations_1",
-      "buffer_index": 26,
+      "buffer_index": 5,
       "role": "output",
       "type": "float device*"
     }

@@ -34,133 +34,133 @@
   "buffer_parameters": [
     {
       "name": "fused_bwd_scales_1",
-      "buffer_index": 34,
+      "buffer_index": 27,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_rotations_1",
-      "buffer_index": 35,
+      "buffer_index": 28,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_means3d_1",
-      "buffer_index": 36,
+      "buffer_index": 29,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_shs_1",
-      "buffer_index": 37,
+      "buffer_index": 30,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_cameraCenter_1",
-      "buffer_index": 38,
+      "buffer_index": 31,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_viewMatrix_1",
-      "buffer_index": 39,
+      "buffer_index": 32,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_fovX_1",
-      "buffer_index": 40,
+      "buffer_index": 33,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_fovY_1",
-      "buffer_index": 41,
+      "buffer_index": 34,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_focalX_1",
-      "buffer_index": 42,
+      "buffer_index": 35,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_focalY_1",
-      "buffer_index": 43,
+      "buffer_index": 36,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_imageWidth_1",
-      "buffer_index": 44,
+      "buffer_index": 37,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_imageHeight_1",
-      "buffer_index": 45,
+      "buffer_index": 38,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_cotMeans2d_1",
-      "buffer_index": 46,
+      "buffer_index": 39,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_cotCov2d_1",
-      "buffer_index": 47,
+      "buffer_index": 40,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_cotColor_1",
-      "buffer_index": 48,
+      "buffer_index": 41,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_cotConic_1",
-      "buffer_index": 49,
+      "buffer_index": 42,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_counts_1",
-      "buffer_index": 50,
+      "buffer_index": 43,
       "role": "input",
       "type": "uint device*"
     },
     {
       "name": "fused_bwd_gradMeanNdc_1",
-      "buffer_index": 51,
+      "buffer_index": 44,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_gradMeans3dScreen_1",
-      "buffer_index": 52,
+      "buffer_index": 45,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_gradShs_1",
-      "buffer_index": 53,
+      "buffer_index": 46,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_gradCov3d_1",
-      "buffer_index": 54,
+      "buffer_index": 47,
       "role": "output",
       "type": "float device*"
     },
     {
       "name": "fused_bwd_gradCameraCenterPoint_1",
-      "buffer_index": 55,
+      "buffer_index": 48,
       "role": "output",
       "type": "float device*"
     }

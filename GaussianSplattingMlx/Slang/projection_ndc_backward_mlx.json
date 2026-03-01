@@ -43,19 +43,19 @@
     },
     {
       "name": "proj_cotMeanNdc_1",
-      "buffer_index": 7,
+      "buffer_index": 4,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "proj_cotPView_1",
-      "buffer_index": 8,
+      "buffer_index": 5,
       "role": "input",
       "type": "float device*"
     },
     {
       "name": "proj_gradPoints_1",
-      "buffer_index": 9,
+      "buffer_index": 6,
       "role": "output",
       "type": "float device*"
     }
