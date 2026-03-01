@@ -18,11 +18,11 @@ This guide is the canonical workflow for adding or modifying Slang kernels and r
 ## 1. Active Kernel Boundaries
 
 1. Projection path: `slang/gaussian_projection_kernels.slang`
-2. Screen-space path: `slang/gaussian_screen_space_kernels.slang`
-3. Tile-global path: `slang/gaussian_tile_global_kernels.slang`
-4. SSIM path: `slang/ssim_kernels.slang`
+2. Tile-global path: `slang/gaussian_tile_global_kernels.slang`
+3. SSIM path: `slang/ssim_kernels.slang`
 
 Legacy per-tile kernels (`gaussian_tile_forward` / `gaussian_tile_backward`) are retired and not part of active runtime.
+Legacy screen-space standalone kernel file (`gaussian_screen_space_kernels.slang`) is also retired.
 
 ## 2. Edit Phase
 
@@ -99,7 +99,6 @@ Adding a Slang entry without adding it to build script mapping causes missing JS
 ## 8. Primary Target Files
 
 - `slang/gaussian_projection_kernels.slang`
-- `slang/gaussian_screen_space_kernels.slang`
 - `slang/gaussian_tile_global_kernels.slang`
 - `slang/ssim_kernels.slang`
 - `scripts/slang/build_projection_slang_mlx.sh`
