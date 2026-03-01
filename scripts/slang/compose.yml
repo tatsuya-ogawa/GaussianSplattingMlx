@@ -1,0 +1,27 @@
+services:
+  slang:
+    build:
+      context: ../..
+      dockerfile: scripts/slang/Dockerfile
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - >
+        set -euo pipefail;
+        mkdir -p build/slang_screen_space build/slang_tile;
+        echo "--- Compiling Screen Space Kernels ---";
+        for entry in gaussian_screen_color_forward gaussian_screen_color_backward gaussian_screen_cov2d_forward gaussian_screen_cov2d_backward gaussian_screen_cov3d_forward gaussian_screen_cov3d_backward gaussian_screen_inverse2d_forward gaussian_screen_inverse2d_backward gaussian_screen_fused_forward; do
+          echo "Compiling $${entry}...";
+          slangc slang/gaussian_screen_space_kernels.slang -target metal -entry "$${entry}" -stage compute -o "build/slang_screen_space/$${entry}.metal";
+        done;
+        echo "--- Compiling Tile Kernels ---";
+        for entry in gaussian_tile_forward gaussian_tile_backward; do
+          echo "Compiling $${entry}...";
+          slangc slang/gaussian_tile_kernels.slang -target metal -entry "$${entry}" -stage compute -o "build/slang_tile/$${entry}.metal";
+        done;
+        slangc -version;
+        echo "--- Build Summary ---";
+        ls -1 build/slang_screen_space/*.metal;
+        ls -1 build/slang_tile/*.metal
