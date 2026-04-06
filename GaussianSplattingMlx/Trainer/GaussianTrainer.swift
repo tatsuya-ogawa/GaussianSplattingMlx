@@ -113,10 +113,46 @@ class TrainData {
     }
 }
 protocol GaussianTrainerDelegate: AnyObject {
-    func pushLoss(loss: Float, iteration: Int?, fps: Float?, timestamp: Date)
+    func pushLoss(loss: Float, iteration: Int?, fps: Float?, gaussianCount: Int?, timestamp: Date)
     func pushImageData(
         render: MLXArray, truth: MLXArray, loss: Float, iteration: Int, timestamp: Date)
     func pushSnapshot(url: URL,iteration: Int, timestamp: Date)
+}
+
+struct GaussianMaintenanceSettings {
+    var isEnabled: Bool = true
+    var densifyInterval: Int = 200
+    var pruneInterval: Int = 100
+    var gradientThreshold: Float = 0.00035
+    var minOpacity: Float = 0.01
+    var maxScale: Float = 0.01
+    var densifyFromIteration: Int = 1_000
+    var densifyUntilIteration: Int = 12_000
+    var maxGaussians: Int = 300_000
+    var splitScaleDivisor: Float = 1.6
+    var splitPositionNoiseScale: Float = 0.075
+    var clonePositionNoiseScale: Float = 0.005
+
+    static let recommended = GaussianMaintenanceSettings()
+
+    func sanitized() -> GaussianMaintenanceSettings {
+        var settings = self
+        settings.densifyInterval = max(1, settings.densifyInterval)
+        settings.pruneInterval = max(1, settings.pruneInterval)
+        settings.gradientThreshold = max(0, settings.gradientThreshold)
+        settings.minOpacity = min(max(0, settings.minOpacity), 0.999)
+        settings.maxScale = max(1e-6, settings.maxScale)
+        settings.densifyFromIteration = max(0, settings.densifyFromIteration)
+        settings.densifyUntilIteration = max(
+            settings.densifyFromIteration,
+            settings.densifyUntilIteration
+        )
+        settings.maxGaussians = max(1, settings.maxGaussians)
+        settings.splitScaleDivisor = max(1.01, settings.splitScaleDivisor)
+        settings.splitPositionNoiseScale = max(0, settings.splitPositionNoiseScale)
+        settings.clonePositionNoiseScale = max(0, settings.clonePositionNoiseScale)
+        return settings
+    }
 }
 
 final class IntervalProfiler {
@@ -278,7 +314,7 @@ class GaussianTrainer {
     private let ssimWindowSize: Int = 11
     private let ssimWindowSigma: Float = 1.5
     var lambda_depth: Float = 0.0
-    var split_and_prune_per_iteration: Int = 100
+    var maintenanceSettings: GaussianMaintenanceSettings
     var save_snapshot_per_iteration: Int
     var iterationCount: Int
     var outputDirectoryURL: URL?
@@ -288,17 +324,7 @@ class GaussianTrainer {
     var profilingLogInterval: Int
     var profilingTopKSections: Int
     weak var delegate: GaussianTrainerDelegate?
-    
-    // Split and prune parameters
-    var gradientThreshold: Float = 0.0002
-    var maxScreenSize: Float = 20.0
-    var minOpacity: Float = 0.005
-    var maxScale: Float = 0.01
-    var pruneInterval: Int = 100
-    var densifyFromIter: Int = 500
-    var densifyUntilIter: Int = 15000
-    var maxGaussians: Int = 1_000_000  // Maximum number of Gaussians to prevent unbounded growth
-    
+
     // Tracking gradients for densification
     var xyzGradAccumulation: MLXArray = MLXArray.zeros([0])  // Scalar gradient magnitudes
     var denomGradAccumulation: Int = 0  // Simple counter (same for all points)
@@ -455,6 +481,7 @@ class GaussianTrainer {
         enableIntervalProfiling: Bool = false,
         profilingLogInterval: Int = 20,
         profilingTopKSections: Int = 12,
+        maintenanceSettings: GaussianMaintenanceSettings = .recommended,
         outputDirectoryURL: URL? = nil,
         saveSnapshotPerIteration: Int = 100
     ) {
@@ -467,6 +494,7 @@ class GaussianTrainer {
         self.enableIntervalProfiling = enableIntervalProfiling
         self.profilingLogInterval = max(1, profilingLogInterval)
         self.profilingTopKSections = max(1, profilingTopKSections)
+        self.maintenanceSettings = maintenanceSettings.sanitized()
         self.outputDirectoryURL = outputDirectoryURL
         self.save_snapshot_per_iteration = saveSnapshotPerIteration
         
@@ -763,9 +791,16 @@ class GaussianTrainer {
     ///  - multiple intermediate mask/index arrays,
     ///  - sequential split → clone → prune passes that invalidate index bookkeeping,
     ///  - CPU round-trips for each `conditionToIndices` / `sum` check.
-    func split_and_prune(params: [MLXArray], states: [TupleState], iteration: Int) {
-        guard iteration >= densifyFromIter && iteration <= densifyUntilIter else {
-            return
+    func split_and_prune(params: [MLXArray], iteration: Int) -> Bool {
+        let settings = maintenanceSettings.sanitized()
+        let shouldPrune = settings.isEnabled && iteration % settings.pruneInterval == 0
+        let shouldDensify =
+            settings.isEnabled
+            && iteration >= settings.densifyFromIteration
+            && iteration <= settings.densifyUntilIteration
+            && iteration % settings.densifyInterval == 0
+        guard shouldPrune || shouldDensify else {
+            return false
         }
         
         let _xyz = params[0]
@@ -778,13 +813,15 @@ class GaussianTrainer {
         let numPoints = _xyz.shape[0]
         guard numPoints > 0 else {
             resetGradientAccumulation()
-            return
+            return false
         }
         
         // When over the Gaussian budget we still prune but disable densification.
-        let allowDensify = numPoints < maxGaussians
-        if !allowDensify {
-            Logger.shared.info("Reached maximum Gaussians limit: \(maxGaussians). Skipping densification.")
+        let allowDensify = shouldDensify && numPoints < settings.maxGaussians
+        if shouldDensify && !allowDensify {
+            Logger.shared.info(
+                "Reached maximum Gaussians limit: \(settings.maxGaussians). Skipping densification."
+            )
         }
         
         // Ensure gradient accumulation arrays match current point count
@@ -798,9 +835,9 @@ class GaussianTrainer {
         let classifyOutputs = classifyGaussiansKernel(
             [xyzGradAccumulation, denomArray,
              _scales, _opacity.reshaped([-1]),
-             MLXArray(gradientThreshold),
-             MLXArray(maxScale),
-             MLXArray(minOpacity),
+             MLXArray(settings.gradientThreshold),
+             MLXArray(settings.maxScale),
+             MLXArray(settings.minOpacity),
              MLXArray(Int32(allowDensify ? 1 : 0))],
             grid: (numPoints, 1, 1),
             threadGroup: (min(256, numPoints), 1, 1),
@@ -823,14 +860,14 @@ class GaussianTrainer {
             if numPrune == 0 {
                 Logger.shared.debug("split_and_prune: no changes at iteration \(iteration)")
                 resetGradientAccumulation()
-                return
+                return false
             }
         }
         
         guard totalOutput > 0 else {
             Logger.shared.info("split_and_prune: all Gaussians would be pruned – skipping")
             resetGradientAccumulation()
-            return
+            return false
         }
         
         // Action counts (cheap – actions are already evaluated)
@@ -842,11 +879,11 @@ class GaussianTrainer {
         if numSplit == 0 && numClone == 0 && numPruneTotal == 0 {
             Logger.shared.debug("split_and_prune: no changes at iteration \(iteration)")
             resetGradientAccumulation()
-            return
+            return false
         }
         
         Logger.shared.info(
-            "split_and_prune iter=\(iteration): keep=\(numKeep) split=\(numSplit) clone=\(numClone) prune=\(numPruneTotal) → total=\(totalOutput)"
+            "split_and_prune iter=\(iteration): keep=\(numKeep) split=\(numSplit) clone=\(numClone) prune=\(numPruneTotal) densify=\(allowDensify) → total=\(totalOutput)"
         )
         
         // ---------- Phase 3: build gather map ----------
@@ -872,26 +909,28 @@ class GaussianTrainer {
         
         // ---------- Phase 5: apply per-slot modifications ----------
         if numSplit > 0 || numClone > 0 {
-            // 5a. Scale reduction for split Gaussians (÷ 1.6 ⇔ −log(1.6) in log-space)
+            // 5a. Scale reduction for split Gaussians (÷ divisor ⇔ −log(divisor) in log-space)
             let isSplit = ((noiseMode .== 1) | (noiseMode .== 2)).asType(.float32)
-            let scaleReduction = isSplit.expandedDimensions(axis: 1) * Float(-log(1.6))
+            let scaleReduction = isSplit.expandedDimensions(axis: 1)
+                * Float(-log(settings.splitScaleDivisor))
             newScales = newScales + scaleReduction
             
             // 5b. Position noise
             let baseNoise = MLXRandom.normal([totalOutput, 3])
             
-            // Split noise – geometry-aware: ±mean(exp(source_scale)) * 0.1 * N(0,1)
+            // Split noise – geometry-aware: ±mean(exp(source_scale)) * splitPositionNoiseScale * N(0,1)
             // Uses the *original* (pre-reduction) source scales for the noise magnitude.
             let sourceScales = MLX.exp(_scales[gatherIndices])  // pre-reduction
             let meanSourceScale = MLX.mean(sourceScales, axes: [1], keepDims: true)
             let isSplitFirst  = (noiseMode .== 1).asType(.float32).expandedDimensions(axis: 1)
             let isSplitSecond = (noiseMode .== 2).asType(.float32).expandedDimensions(axis: 1)
             let splitSign = isSplitFirst - isSplitSecond  // +1 or −1
-            let splitNoise = splitSign * meanSourceScale * 0.1 * baseNoise
+            let splitNoise = splitSign * meanSourceScale * settings.splitPositionNoiseScale
+                * baseNoise
             
-            // Clone noise – small fixed offset (0.01 * N(0,1)) for clone copies only.
+            // Clone noise – small fixed offset for clone copies only.
             let isCloneCopy = (noiseMode .== 3).asType(.float32).expandedDimensions(axis: 1)
-            let cloneNoise = isCloneCopy * 0.01 * baseNoise
+            let cloneNoise = isCloneCopy * settings.clonePositionNoiseScale * baseNoise
             
             newXYZ = newXYZ + splitNoise + cloneNoise
         }
@@ -905,6 +944,7 @@ class GaussianTrainer {
         model._opacity = newOpacity
         
         resetGradientAccumulation()
+        return true
     }    
     func save_snapshot(iteration: Int, params: [MLXArray]) {
         // TODO: Implement snapshot saving logic if needed
@@ -1024,6 +1064,7 @@ class GaussianTrainer {
                         loss: lossValue,
                         iteration: iteration,
                         fps: fps,
+                        gaussianCount: params[0].shape[0],
                         timestamp: Date())
                 }
             }
@@ -1095,10 +1136,10 @@ class GaussianTrainer {
                     clearCacheIfNeeded()
                 }
             }
-            if iteration % self.split_and_prune_per_iteration == 0 {
-                profiler.measure("train.splitAndPrune") {
-                    self.split_and_prune(params: params, states: states, iteration: iteration)
-                }
+            let didChangeGaussianCount = profiler.measure("train.splitAndPrune") {
+                self.split_and_prune(params: params, iteration: iteration)
+            }
+            if didChangeGaussianCount {
                 profiler.measure("train.rebuildParamsAfterSplit") {
                     // Update params after split_and_prune since number of Gaussians may have changed
                     params = model.getParams()
