@@ -144,10 +144,12 @@ kernel void assignGaussiansToTiles(
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= numGaussians) return;
-    if (visibilityMask[id] == 0) return;
     
     ProjectedGaussian gaussian = gaussians[id];
     if (gaussian.alpha <= 0.0f) return;
+    // Use the original (pre-sort) index to look up visibility,
+    // since visibilityMask was written with pre-sort indices.
+    if (visibilityMask[gaussian.originalIndex] == 0) return;
     
     // Compute radius
     float det = gaussian.cov2d.x * gaussian.cov2d.z - gaussian.cov2d.y * gaussian.cov2d.y;
