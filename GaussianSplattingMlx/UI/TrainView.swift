@@ -64,8 +64,20 @@ extension TrainViewModel: GaussianTrainerDelegate {
         TrainOutputAsset.shared.pushSnapshot(url: url, iteration: iteration, timestamp: timestamp)
     }
 
-    func pushLoss(loss: Float, iteration: Int?, fps: Float?, timestamp: Date) {
-        LossChartData.shared.push(loss: loss, iteration: iteration, fps: fps, timestamp: timestamp)
+    func pushLoss(
+        loss: Float,
+        iteration: Int?,
+        fps: Float?,
+        gaussianCount: Int?,
+        timestamp: Date
+    ) {
+        LossChartData.shared.push(
+            loss: loss,
+            iteration: iteration,
+            fps: fps,
+            gaussianCount: gaussianCount,
+            timestamp: timestamp
+        )
     }
 
     func pushImageData(
@@ -83,6 +95,8 @@ struct TrainView: View {
     @State var intervalProfilingEnabled: Bool = false
     @State var profilingLogInterval: Int = 20
     @State var profilingTopKSections: Int = 12
+    @State private var maintenanceSettings = GaussianMaintenanceSettings.recommended
+    @State private var showMaintenanceCustomization: Bool = false
 
     func getDataLoader() throws -> DataLoaderProtocol {
         switch selected.format {
@@ -171,6 +185,7 @@ struct TrainView: View {
         let sh_degree = 4
         let safeSampleCount = max(1, sampleCount)
         let safeIterationCount = max(1, iterationCount)
+        let safeMaintenanceSettings = maintenanceSettings.sanitized()
         let gaussModel = GaussianTrainer.createModel(
             sh_degree: sh_degree,
             pointCloud: pointCloud,
@@ -194,6 +209,7 @@ struct TrainView: View {
             enableIntervalProfiling: intervalProfilingEnabled,
             profilingLogInterval: max(1, profilingLogInterval),
             profilingTopKSections: max(1, profilingTopKSections),
+            maintenanceSettings: safeMaintenanceSettings,
             outputDirectoryURL: TrainOutputAsset.shared.getOutputDirectory()
         )
         viewModel.trainer?.delegate = viewModel
@@ -214,10 +230,16 @@ struct TrainView: View {
         format: .colmap,
         url: nil
     )
+    func resetMaintenanceSettings() {
+        maintenanceSettings = .recommended
+        showMaintenanceCustomization = false
+    }
     func startTrain() {
         latestCaptureURL = nil
         showShareSheet = false
         isTraining = true
+        LossChartData.shared.clear()
+        TrainStatusData.shared.clear()
         DispatchQueue.global().async {
             Logger.shared.debug("Start Train")
             do {
@@ -233,18 +255,26 @@ struct TrainView: View {
     func stopTrain() {
         viewModel.trainer?.stopTrain()
     }
+
+    var maintenanceSummary: String {
+        let settings = maintenanceSettings.sanitized()
+        return
+            "interval \(settings.densifyInterval)/\(settings.pruneInterval), grad \(settings.gradientThreshold), cap \(settings.maxGaussians)"
+    }
+
     var body: some View {
-        VStack {
-            if isTraining {
-                TrainStatusView()
-                Button(action: stopTrain) {
-                    Text("Stop Train")
-                }.buttonStyle(.borderedProminent)
-            } else {
-                SelectDataSetView(selected: $selected)
-                    .onChange(of: selected) { oldValue, newValue in
-                        loadOriginalResolution()
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if isTraining {
+                    TrainStatusView()
+                    Button(action: stopTrain) {
+                        Text("Stop Train")
+                    }.buttonStyle(.borderedProminent)
+                } else {
+                    SelectDataSetView(selected: $selected)
+                        .onChange(of: selected) { oldValue, newValue in
+                            loadOriginalResolution()
+                        }
                 
                 VStack(alignment: .leading, spacing: 12) {
                     // Dataset resolution information
@@ -341,22 +371,207 @@ struct TrainView: View {
                         .keyboardType(.numberPad)
                         .frame(width: 140)
                     }
-                }
-                HStack(spacing: 12) {
-                    Button(action: startTrain) {
-                        Text("Do Train")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!selected.isValid)
 
-                    if latestCaptureURL != nil {
-                        Button(action: { showShareSheet = true }) {
-                            Text("Share Capture")
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Gaussian Maintenance")
+                                .font(.headline)
+                            Spacer()
+                            Button("Use Recommended", action: resetMaintenanceSettings)
+                                .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
+
+                        Toggle("Enable split / prune", isOn: $maintenanceSettings.isEnabled)
+                            .toggleStyle(.switch)
+
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Current")
+                                .font(.subheadline.weight(.medium))
+                            Text(maintenanceSummary)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Toggle("Customize maintenance settings", isOn: $showMaintenanceCustomization)
+                            .toggleStyle(.switch)
+
+                        if showMaintenanceCustomization {
+                            Text(
+                                "Higher gradient threshold, longer densify interval, and a lower Gaussian cap reduce runaway growth."
+                            )
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Group {
+                                    HStack {
+                                        Text("Densify Interval")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "200",
+                                            value: $maintenanceSettings.densifyInterval,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.numberPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Prune Interval")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "100",
+                                            value: $maintenanceSettings.pruneInterval,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.numberPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Gradient Threshold")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "0.00035",
+                                            value: $maintenanceSettings.gradientThreshold,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Min Opacity")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "0.01",
+                                            value: $maintenanceSettings.minOpacity,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Max Scale")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "0.01",
+                                            value: $maintenanceSettings.maxScale,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+                                }
+
+                                Group {
+                                    HStack {
+                                        Text("Densify Start")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "1000",
+                                            value: $maintenanceSettings.densifyFromIteration,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.numberPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Densify End")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "12000",
+                                            value: $maintenanceSettings.densifyUntilIteration,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.numberPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Max Gaussians")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "300000",
+                                            value: $maintenanceSettings.maxGaussians,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.numberPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Split Divisor")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "1.6",
+                                            value: $maintenanceSettings.splitScaleDivisor,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Split Noise")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "0.075",
+                                            value: $maintenanceSettings.splitPositionNoiseScale,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+
+                                    HStack {
+                                        Text("Clone Noise")
+                                        Spacer(minLength: 12)
+                                        TextField(
+                                            "0.005",
+                                            value: $maintenanceSettings.clonePositionNoiseScale,
+                                            format: .number
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                        .keyboardType(.decimalPad)
+                                        .frame(width: 110)
+                                    }
+                                }
+                            }
+                            .font(.subheadline)
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+                    HStack(spacing: 12) {
+                        Button(action: startTrain) {
+                            Text("Do Train")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!selected.isValid)
+
+                        if latestCaptureURL != nil {
+                            Button(action: { showShareSheet = true }) {
+                                Text("Share Capture")
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
         .sheet(isPresented: $showShareSheet) {
@@ -381,4 +596,3 @@ extension SelectedDataSet {
         }
     }
 }
-

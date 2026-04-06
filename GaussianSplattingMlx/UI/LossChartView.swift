@@ -13,23 +13,38 @@ struct LossData: Identifiable {
     let loss: Float
     let iteration: Int?
     let fps: Float?
+    let gaussianCount: Int?
 }
 
 class LossChartData: ObservableObject {
     @Published private(set) var data: [LossData] = []
     @Published private(set) var iteration: Int? = nil
     @Published private(set) var currentFPS: Float? = nil
+    @Published private(set) var gaussianCount: Int? = nil
     static let shared = LossChartData()
     private init() {}
 
     let maxVisibleCount = 100
 
-    func push(loss: Float, iteration: Int? = nil, fps: Float? = nil, timestamp: Date = Date()) {
+    func push(
+        loss: Float,
+        iteration: Int? = nil,
+        fps: Float? = nil,
+        gaussianCount: Int? = nil,
+        timestamp: Date = Date()
+    ) {
         DispatchQueue.main.async { [self] in
             self.iteration = iteration
             self.currentFPS = fps
+            self.gaussianCount = gaussianCount
             self.data.append(
-                LossData(timestamp: timestamp, loss: loss, iteration: iteration, fps: fps)
+                LossData(
+                    timestamp: timestamp,
+                    loss: loss,
+                    iteration: iteration,
+                    fps: fps,
+                    gaussianCount: gaussianCount
+                )
             )
             if self.data.count > maxVisibleCount {
                 data.removeFirst(data.count - maxVisibleCount)
@@ -40,6 +55,9 @@ class LossChartData: ObservableObject {
     func clear() {
         DispatchQueue.main.async {
             self.data.removeAll()
+            self.iteration = nil
+            self.currentFPS = nil
+            self.gaussianCount = nil
         }
     }
 }
@@ -54,6 +72,10 @@ struct LossChartView: View {
                 Spacer()
                 if let fps = chartData.currentFPS {
                     Text(String(format: "%.1f frame/s", fps))
+                        .foregroundColor(.secondary)
+                }
+                if let gaussianCount = chartData.gaussianCount {
+                    Text("\(gaussianCount) gaussians")
                         .foregroundColor(.secondary)
                 }
             }
@@ -76,6 +98,9 @@ struct LossChartView: View {
                             Text(String(format: "loss: %.4f", item.loss)).font(.caption2)
                             if let fps = item.fps {
                                 Text(String(format: "fps: %.1f", fps)).font(.caption2)
+                            }
+                            if let gaussianCount = item.gaussianCount {
+                                Text("gaussians: \(gaussianCount)").font(.caption2)
                             }
                             Text(item.timestamp, style: .time).font(.caption2)
                         }
