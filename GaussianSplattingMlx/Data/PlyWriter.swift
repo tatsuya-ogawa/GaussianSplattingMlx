@@ -1,6 +1,26 @@
 import Foundation
 import MLX
 
+struct RenderCameraIntrinsics: Hashable {
+    let sourceWidth: Int
+    let sourceHeight: Int
+    let focalX: Float
+    let focalY: Float
+
+    var isValid: Bool {
+        sourceWidth > 0 && sourceHeight > 0 && focalX.isFinite && focalY.isFinite
+            && focalX > 0 && focalY > 0
+    }
+
+    func focalX(forWidth width: Int) -> Double {
+        Double(focalX) * Double(width) / Double(sourceWidth)
+    }
+
+    func focalY(forHeight height: Int) -> Double {
+        Double(focalY) * Double(height) / Double(sourceHeight)
+    }
+}
+
 extension Array {
     func chunked(into chunkSize: Int) -> [[Element]] {
         stride(from: 0, to: count, by: chunkSize).map {
@@ -15,6 +35,7 @@ struct GaussianPlyData {
     let opacities: [Float]  // N
     let scales: [[Float]]  // N×3
     let rotations: [[Float]]  // N×4
+    let renderCameraIntrinsics: RenderCameraIntrinsics?
 }
 
 class PlyWriter {
@@ -26,6 +47,7 @@ class PlyWriter {
         opacities: [Float],  // N
         scales: [[Float]],  // N×3
         rotations: [[Float]],  // N×4
+        renderCameraIntrinsics: RenderCameraIntrinsics? = nil,
         to url: URL
     ) throws {
         let numPoints = positions.count
@@ -46,6 +68,10 @@ class PlyWriter {
         header += "ply\n"
         header += "format binary_little_endian 1.0\n"
         header += "comment features_rest_shape \(M) 3\n"
+        if let renderCameraIntrinsics, renderCameraIntrinsics.isValid {
+            header +=
+                "comment render_camera_intrinsics \(renderCameraIntrinsics.sourceWidth) \(renderCameraIntrinsics.sourceHeight) \(renderCameraIntrinsics.focalX) \(renderCameraIntrinsics.focalY)\n"
+        }
         header += "element vertex \(numPoints)\n"
         header += "property float x\n"
         header += "property float y\n"
@@ -120,6 +146,7 @@ class PlyWriter {
         opacities: MLXArray,  // N
         scales: MLXArray,  // N×3
         rotations: MLXArray,  // N×4
+        renderCameraIntrinsics: RenderCameraIntrinsics? = nil,
         to url: URL
     ) throws {
         let pos = positions.reshaped([-1, 3]).asArray(Float.self)
@@ -141,6 +168,7 @@ class PlyWriter {
             opacities: opa,
             scales: scl.chunked(into: 3),
             rotations: rot.chunked(into: 4),
+            renderCameraIntrinsics: renderCameraIntrinsics,
             to: url
         )
     }
@@ -161,6 +189,7 @@ class PlyWriter {
         }
         var numPoints = 0
         var restShape: (M: Int, D: Int)? = nil
+        var renderCameraIntrinsics: RenderCameraIntrinsics?
         var restCount = 0
         var fieldNames: [String] = []
         for line in headerStr.split(separator: "\n") {
@@ -168,6 +197,23 @@ class PlyWriter {
                 let comps = line.split(separator: " ")
                 if comps.count >= 4 {
                     restShape = (Int(comps[2]) ?? 0, Int(comps[3]) ?? 0)
+                }
+            }
+            if line.hasPrefix("comment render_camera_intrinsics") {
+                let comps = line.split(separator: " ")
+                if comps.count >= 6,
+                    let sourceWidth = Int(comps[2]),
+                    let sourceHeight = Int(comps[3]),
+                    let focalX = Float(String(comps[4])),
+                    let focalY = Float(String(comps[5]))
+                {
+                    let intrinsics = RenderCameraIntrinsics(
+                        sourceWidth: sourceWidth,
+                        sourceHeight: sourceHeight,
+                        focalX: focalX,
+                        focalY: focalY
+                    )
+                    renderCameraIntrinsics = intrinsics.isValid ? intrinsics : nil
                 }
             }
             let parts = line.split(separator: " ")
@@ -229,7 +275,8 @@ class PlyWriter {
             features_rest: features_rest,
             opacities: opacities,
             scales: scales,
-            rotations: rotations
+            rotations: rotations,
+            renderCameraIntrinsics: renderCameraIntrinsics
         )
     }
 
@@ -237,9 +284,29 @@ class PlyWriter {
         positions: MLXArray,
         features_dc: MLXArray,
         features_rest: MLXArray,
-        opacities: MLXArray,
-        scales: MLXArray,
-        rotations: MLXArray
+            opacities: MLXArray,
+            scales: MLXArray,
+            rotations: MLXArray
+    ) {
+        let loaded = try loadGaussianBinaryPLYAsMLXWithMetadata(from: url)
+        return (
+            positions: loaded.positions,
+            features_dc: loaded.features_dc,
+            features_rest: loaded.features_rest,
+            opacities: loaded.opacities,
+            scales: loaded.scales,
+            rotations: loaded.rotations
+        )
+    }
+
+    static func loadGaussianBinaryPLYAsMLXWithMetadata(from url: URL) throws -> (
+            positions: MLXArray,
+            features_dc: MLXArray,
+            features_rest: MLXArray,
+            opacities: MLXArray,
+            scales: MLXArray,
+            rotations: MLXArray,
+            renderCameraIntrinsics: RenderCameraIntrinsics?
     ) {
         let ply = try loadGaussianBinaryPLY(from: url)
         func toMLX2D(_ arr: [[Float]]) -> MLXArray {
@@ -260,7 +327,8 @@ class PlyWriter {
             features_rest: toMLX3D(ply.features_rest),
             opacities: toMLX1D(ply.opacities)[.ellipsis, .newAxis],
             scales: toMLX2D(ply.scales),
-            rotations: toMLX2D(ply.rotations)
+            rotations: toMLX2D(ply.rotations),
+            renderCameraIntrinsics: ply.renderCameraIntrinsics
         )
     }
 }

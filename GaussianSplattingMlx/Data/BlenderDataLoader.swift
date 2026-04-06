@@ -109,104 +109,22 @@ class BlenderDemoDataLoader: DataLoaderProtocol {
     )
         -> (MLXArray, MLXArray, MLXArray, MLXArray)
     {
-        func resizeImage(_ image: UIImage, scale: Double) -> UIImage {
-            if scale == 1.0 { return image }
-            let newSize = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            let resized = UIGraphicsGetImageFromCurrentImageContext() ?? image
-            UIGraphicsEndImageContext()
-            return resized
-        }
-        func loadGray(path: URL, scale: Double) -> MLXArray {
-            guard let image = UIImage(contentsOfFile: path.path) else {
-                fatalError("Can not load image: \(path)")
-            }
-            let img = resizeImage(image, scale: scale)
-            guard let cgImage = img.cgImage else {
-                fatalError("CGImage transform failed")
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerPixel = 1
-            let bytesPerRow = bytesPerPixel * width
-            let totalBytes = height * bytesPerRow
-            var rawData = [UInt8](repeating: 0, count: totalBytes)
-            let colorSpace = CGColorSpaceCreateDeviceGray()
-            let context = CGContext(
-                data: &rawData,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.none.rawValue
-            )
-            context?.draw(
-                cgImage,
-                in: CGRect(x: 0, y: 0, width: width, height: height)
-            )
-
-            let floatData = rawData.map { Float($0) / 255.0 }
-            return MLXArray(floatData, [height, width])
-        }
-        func loadRGB(path: URL, scale: Double) -> MLXArray {
-            guard let image = UIImage(contentsOfFile: path.path) else {
-                fatalError("Can not load image: \(path)")
-            }
-            let img = resizeImage(image, scale: scale)
-            guard let cgImage = img.cgImage else {
-                fatalError("CGImage transformation failed")
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerPixel = 4
-            let bytesPerRow = bytesPerPixel * width
-            let totalBytes = height * bytesPerRow
-            var rawData = [UInt8](repeating: 0, count: totalBytes)
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let context = CGContext(
-                data: &rawData,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-            context?.draw(
-                cgImage,
-                in: CGRect(x: 0, y: 0, width: width, height: height)
-            )
-
-            var floatData = [Float]()
-            for i in 0..<(width * height) {
-                let offset = i * 4
-                floatData.append(Float(rawData[offset + 0]) / 255.0)  // R
-                floatData.append(Float(rawData[offset + 1]) / 255.0)  // G
-                floatData.append(Float(rawData[offset + 2]) / 255.0)  // B
-            }
-            return MLXArray(floatData, [height, width, 3])
-        }
-
-        let rgb = loadRGB(path: path, scale: resizeFactor)
+        let (rgb, _, _, _) = ImageRGBAReader.readImage(
+            path: path,
+            resizeFactor: resizeFactor
+        )
         let baseName = path.deletingPathExtension().lastPathComponent.split(
             separator: "_"
         ).first!
         let dir = path.deletingLastPathComponent()
         let depth =
-            loadGray(
+            ImageRGBAReader.readGray(
                 path: dir.appendingPathComponent("\(baseName)_depth.png"),
-                scale: resizeFactor
+                resizeFactor: resizeFactor
             ) * maxDepth
-        let alpha = loadGray(
+        let alpha = ImageRGBAReader.readGray(
             path: dir.appendingPathComponent("\(baseName)_alpha.png"),
-            scale: resizeFactor
+            resizeFactor: resizeFactor
         )
 
         let imageSize = rgb.shape

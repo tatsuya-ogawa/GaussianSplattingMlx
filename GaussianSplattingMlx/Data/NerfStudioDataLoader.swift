@@ -25,20 +25,35 @@ private struct TransformsData: Codable {
     let cy: Double?
     let k1: Double?
     let k2: Double?
+    let k3: Double?
     let p1: Double?
     let p2: Double?
-    func getIntrinsicMatrix() -> simd_double3x3? {
+    var supportsBrownConradyDistortion: Bool {
+        guard let model = camera_model?.uppercased() else { return true }
+        return !model.contains("FISHEYE") && !model.contains("EQUIRECTANGULAR")
+    }
+
+    func getPinholeIntrinsics() -> PinholeIntrinsics? {
         if let fl_x, let fl_y, let cx, let cy {
-            var P = matrix_double3x3()
-            P.columns = (
-                SIMD3<Double>(fl_x, 0, 0),
-                SIMD3<Double>(0, fl_y, 0),
-                SIMD3<Double>(cx, cy, 1),
-            )
-            return P
+            return PinholeIntrinsics(fx: fl_x, fy: fl_y, cx: cx, cy: cy)
         } else {
             return nil
         }
+    }
+
+    func getIntrinsicMatrix() -> simd_double3x3? {
+        getPinholeIntrinsics()?.toSimdMatrix()
+    }
+
+    func getDistortion() -> CameraDistortion? {
+        guard supportsBrownConradyDistortion else { return nil }
+        return CameraDistortion(
+            k1: k1 ?? 0,
+            k2: k2 ?? 0,
+            k3: k3 ?? 0,
+            p1: p1 ?? 0,
+            p2: p2 ?? 0
+        ).nonIdentity
     }
 }
 
@@ -57,18 +72,27 @@ private struct Frame: Codable {
     let k3: Double?
     let p1: Double?
     let p2: Double?
-    func getIntrinsicMatrix() -> simd_double3x3? {
+    func getPinholeIntrinsics() -> PinholeIntrinsics? {
         if let fl_x, let fl_y, let cx, let cy {
-            var P = matrix_double3x3()
-            P.columns = (
-                SIMD3<Double>(fl_x, 0, 0),
-                SIMD3<Double>(0, fl_y, 0),
-                SIMD3<Double>(cx, cy, 1),
-            )
-            return P
+            return PinholeIntrinsics(fx: fl_x, fy: fl_y, cx: cx, cy: cy)
         } else {
             return nil
         }
+    }
+
+    func getIntrinsicMatrix() -> simd_double3x3? {
+        getPinholeIntrinsics()?.toSimdMatrix()
+    }
+
+    func getDistortion(fallback: TransformsData) -> CameraDistortion? {
+        guard fallback.supportsBrownConradyDistortion else { return nil }
+        return CameraDistortion(
+            k1: k1 ?? fallback.k1 ?? 0,
+            k2: k2 ?? fallback.k2 ?? 0,
+            k3: k3 ?? fallback.k3 ?? 0,
+            p1: p1 ?? fallback.p1 ?? 0,
+            p2: p2 ?? fallback.p2 ?? 0
+        ).nonIdentity
     }
 }
 
@@ -244,74 +268,19 @@ class NerfStudioDataLoader {
 
     func readImage(
         path: URL,
-        resizeFactor: Double
+        resizeFactor: Double,
+        intrinsics: PinholeIntrinsics? = nil,
+        distortion: CameraDistortion? = nil
     )
         -> (
             rgb: MLXArray, alpha: MLXArray, H: MLXArray, W: MLXArray
         )
     {
-        func resizeImage(_ image: UIImage, scale: Double) -> UIImage {
-            if scale == 1.0 { return image }
-            let newSize = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            let resized = UIGraphicsGetImageFromCurrentImageContext() ?? image
-            UIGraphicsEndImageContext()
-            return resized
-        }
-        func loadRGBA(path: URL, scale: Double) -> MLXArray {
-            guard let image = UIImage(contentsOfFile: path.path) else {
-                fatalError("Can not load image: \(path)")
-            }
-            let img = resizeImage(image, scale: scale)
-            guard let cgImage = img.cgImage else {
-                fatalError("CGImage transform failed")
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerPixel = 4
-            let bytesPerRow = bytesPerPixel * width
-            let totalBytes = height * bytesPerRow
-            var rawData = [UInt8](repeating: 0, count: totalBytes)
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let context = CGContext(
-                data: &rawData,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-            context?.draw(
-                cgImage,
-                in: CGRect(x: 0, y: 0, width: width, height: height)
-            )
-
-            var floatData = [Float]()
-            for i in 0..<(width * height) {
-                let offset = i * 4
-                floatData.append(Float(rawData[offset + 0]) / 255.0)  // R
-                floatData.append(Float(rawData[offset + 1]) / 255.0)  // G
-                floatData.append(Float(rawData[offset + 2]) / 255.0)  // B
-                floatData.append(Float(rawData[offset + 3]) / 255.0)  // A
-            }
-            return MLXArray(floatData, [height, width, 4])
-        }
-
-        let rgba = loadRGBA(path: path, scale: resizeFactor)
-        let rgb = rgba[.ellipsis, 0..<3]
-        let alpha = rgba[.ellipsis, 3]
-        let imageSize = rgb.shape
-
-        return (
-            rgb, alpha,
-            MLXArray(Float(imageSize[0])),
-            MLXArray(Float(imageSize[1]))
+        ImageRGBAReader.readImage(
+            path: path,
+            resizeFactor: resizeFactor,
+            intrinsics: intrinsics,
+            distortion: distortion
         )
     }
 
@@ -328,21 +297,23 @@ class NerfStudioDataLoader {
         var alphaArray: [MLXArray] = []
         var c2wArray: [MLXArray] = []
         for frame in transformsData.frames {
-            guard
-                let intrinsic =
-                    (frame.getIntrinsicMatrix()
-                    ?? transformsData.getIntrinsicMatrix())?
-                    .toMLXArray()
+            guard let baseIntrinsics =
+                frame.getPinholeIntrinsics()
+                ?? transformsData.getPinholeIntrinsics()
             else {
                 fatalError("Failed to load intrinsic matrix")
             }
-            if resizeFactor != 1.0 {
-                intrinsic[..<2, ..<3] *= resizeFactor
-            }
-            intrinsics.append(intrinsic)
+            intrinsics.append(
+                baseIntrinsics
+                    .scaled(by: resizeFactor)
+                    .toSimdMatrix()
+                    .toMLXArray()
+            )
             let (rgb, alpha, h, w) = readImage(
                 path: directoryURL.appendingPathComponent(frame.file_path),
-                resizeFactor: resizeFactor
+                resizeFactor: resizeFactor,
+                intrinsics: baseIntrinsics,
+                distortion: frame.getDistortion(fallback: transformsData)
             )
             rgbArray.append(rgb)
             alphaArray.append(alpha)

@@ -21,7 +21,8 @@ import simd
 private func getInitialCamera(
     boundingBox: ([Float], [Float]),
     width: Int,
-    height: Int
+    height: Int,
+    renderCameraIntrinsics: RenderCameraIntrinsics?
 ) -> (simd_double4x4, Double, Double) {
     let (min, max) = boundingBox
     let center = zip(min, max).map { ($0 + $1) / 2 }
@@ -43,8 +44,16 @@ private func getInitialCamera(
     let up = simd_double3(0, 1, 0)
     let viewMatrix = lookAt(eye: camPos, center: camTarget, up: up)
 
-    let focalX = Double(width) / (2.0 * tan(Double.pi / 6.0))
-    let focalY = Double(height) / (2.0 * tan(Double.pi / 6.0))
+    let focalX: Double
+    let focalY: Double
+    if let renderCameraIntrinsics, renderCameraIntrinsics.isValid {
+        focalX = renderCameraIntrinsics.focalX(forWidth: width)
+        focalY = renderCameraIntrinsics.focalY(forHeight: height)
+    } else {
+        let fallbackFov = 40.0 * Double.pi / 180.0
+        focalX = fov2focal(fov: fallbackFov, pixels: Double(width))
+        focalY = fov2focal(fov: fallbackFov, pixels: Double(height))
+    }
     return (viewMatrix, focalX, focalY)
 }
 
@@ -114,12 +123,14 @@ class RenderViewModel: ObservableObject {
     func setInitialCamera(
         boundingBox: ([Float], [Float]),
         width: Int,
-        height: Int
+        height: Int,
+        renderCameraIntrinsics: RenderCameraIntrinsics?
     ) {
         let (viewMatrix, focalX, focalY) = getInitialCamera(
             boundingBox: boundingBox,
             width: width,
-            height: height
+            height: height,
+            renderCameraIntrinsics: renderCameraIntrinsics
         )
         self.cameraMatrix = viewMatrix
         self.focalX = focalX
@@ -143,9 +154,20 @@ class RenderViewModel: ObservableObject {
         let min = xyzArray.min(axes: [0])
         return (min.asArray(Float.self), max.asArray(Float.self))
     }
-    func load(url: URL) throws {
-        let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) =
-            try PlyWriter.loadGaussianBinaryPLYAsMLX(from: url)
+    func load(
+        url: URL,
+        renderCameraIntrinsics: RenderCameraIntrinsics? = nil,
+        usePlyRenderCameraIntrinsics: Bool = false
+    ) throws {
+        let plyData = try PlyWriter.loadGaussianBinaryPLYAsMLXWithMetadata(from: url)
+        let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) = (
+            plyData.positions,
+            plyData.features_dc,
+            plyData.features_rest,
+            plyData.opacities,
+            plyData.scales,
+            plyData.rotations
+        )
         
         let means3d = gaussRender.get_xyz_from(_xyz)
         let opacity = gaussRender.get_opacity_from(_opacity)
@@ -160,7 +182,13 @@ class RenderViewModel: ObservableObject {
             rotations: rotations
         ) ?? false
 
-        setInitialCamera(boundingBox: calcBoundingBox(xyzArray: _xyz), width: width, height: height)
+        setInitialCamera(
+            boundingBox: calcBoundingBox(xyzArray: _xyz),
+            width: width,
+            height: height,
+            renderCameraIntrinsics: renderCameraIntrinsics
+                ?? (usePlyRenderCameraIntrinsics ? plyData.renderCameraIntrinsics : nil)
+        )
     }
     func render(force: Bool = false) {
         let now = CACurrentMediaTime()
@@ -235,13 +263,23 @@ private struct MetalTextureView: UIViewRepresentable {
 struct RenderView: View {
     let width: Int
     let height: Int
+    let renderCameraIntrinsics: RenderCameraIntrinsics?
+    let usePlyRenderCameraIntrinsics: Bool
     private let renderQueue = DispatchQueue(label: "com.GaussianSplattingMlX.renderqueue")
     @Binding var url: URL?
     @State private var lastDrag: CGSize = .zero
     @StateObject var viewModel: RenderViewModel
-    init(url: Binding<URL?>, width: Int, height: Int) {
+    init(
+        url: Binding<URL?>,
+        width: Int,
+        height: Int,
+        renderCameraIntrinsics: RenderCameraIntrinsics? = nil,
+        usePlyRenderCameraIntrinsics: Bool = false
+    ) {
         self.width = width
         self.height = height
+        self.renderCameraIntrinsics = renderCameraIntrinsics
+        self.usePlyRenderCameraIntrinsics = usePlyRenderCameraIntrinsics
         self._url = url
         _viewModel = StateObject(
             wrappedValue: RenderViewModel(width: width, height: height)
@@ -324,7 +362,11 @@ struct RenderView: View {
             if let url = newValue {
                 renderQueue.async {
                     do {
-                        try viewModel.load(url: url)
+                        try viewModel.load(
+                            url: url,
+                            renderCameraIntrinsics: renderCameraIntrinsics,
+                            usePlyRenderCameraIntrinsics: usePlyRenderCameraIntrinsics
+                        )
                         viewModel.updateCamera()
                         viewModel.render(force: true)
                     } catch {
@@ -341,6 +383,7 @@ struct SnapshotRenderView: View {
     @ObservedObject var asset = TrainOutputAsset.shared
     @State private var selected: TrainSnapshot?
     @State private var renderURL: URL?
+    @State private var renderCameraIntrinsics: RenderCameraIntrinsics?
     @State private var showShareSheet = false
     
     private func isRendering(_ snap: TrainSnapshot) -> Bool {
@@ -355,7 +398,12 @@ struct SnapshotRenderView: View {
         VStack{
             Text("Snapshot Render")
             HStack {
-                RenderView(url: .constant(renderURL), width: 512, height: 512)
+                RenderView(
+                    url: .constant(renderURL),
+                    width: 512,
+                    height: 512,
+                    renderCameraIntrinsics: renderCameraIntrinsics
+                )
                     .frame(width: 512, height: 512)
                 Divider()
                 VStack {
@@ -410,6 +458,7 @@ struct SnapshotRenderView: View {
                         HStack(spacing: 16) {
                             Button(action: {
                                 renderURL = selected.url
+                                renderCameraIntrinsics = selected.renderCameraIntrinsics
                             }) {
                                 Label("Render", systemImage: "eye.fill")
                             }

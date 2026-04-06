@@ -53,6 +53,20 @@ class TrainData {
     ) {
         return (Hs, Ws, intrinsicArray, c2wArray)
     }
+
+    func getRenderCameraIntrinsics(index: Int = 0) -> RenderCameraIntrinsics? {
+        guard index >= 0 && index < getNumCameras() else { return nil }
+        let width = Ws[index].item(Int.self)
+        let height = Hs[index].item(Int.self)
+        let intrinsic = intrinsicArray[index]
+        let intrinsics = RenderCameraIntrinsics(
+            sourceWidth: width,
+            sourceHeight: height,
+            focalX: intrinsic[0][0].item(Float.self),
+            focalY: intrinsic[1][1].item(Float.self)
+        )
+        return intrinsics.isValid ? intrinsics : nil
+    }
     
     /// Make all MLXArrays contiguous to optimize memory layout
     /// - Returns: A new optimized TrainData instance
@@ -116,7 +130,9 @@ protocol GaussianTrainerDelegate: AnyObject {
     func pushLoss(loss: Float, iteration: Int?, fps: Float?, gaussianCount: Int?, timestamp: Date)
     func pushImageData(
         render: MLXArray, truth: MLXArray, loss: Float, iteration: Int, timestamp: Date)
-    func pushSnapshot(url: URL,iteration: Int, timestamp: Date)
+    func pushSnapshot(
+        url: URL, iteration: Int, timestamp: Date,
+        renderCameraIntrinsics: RenderCameraIntrinsics?)
 }
 
 struct GaussianMaintenanceSettings {
@@ -957,11 +973,15 @@ class GaussianTrainer {
             let opacity = params[5]
             do {
                 let outputURL = outputDirectoryURL.appendingPathComponent("iteration_\(iteration).ply")
+                let renderCameraIntrinsics = data.getRenderCameraIntrinsics()
                 try PlyWriter.writeGaussianBinary(
                     positions: xyz, features_dc: features_dc, features_rest: features_rest,
                     opacities: opacity, scales: scales, rotations: rotation,
+                    renderCameraIntrinsics: renderCameraIntrinsics,
                     to: outputURL)
-                delegate?.pushSnapshot(url: outputURL, iteration: iteration, timestamp: Date())
+                delegate?.pushSnapshot(
+                    url: outputURL, iteration: iteration, timestamp: Date(),
+                    renderCameraIntrinsics: renderCameraIntrinsics)
             } catch {
                 Logger.shared.error(error: error)
             }
