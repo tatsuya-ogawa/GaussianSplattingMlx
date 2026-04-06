@@ -14,6 +14,7 @@ struct TrainSnapshot: Identifiable ,Hashable{
     let timestamp: Date
     let url: URL
     let iteration: Int
+    let renderCameraIntrinsics: RenderCameraIntrinsics?
 }
 class TrainOutputAsset: ObservableObject {
     static let shared = TrainOutputAsset()
@@ -21,9 +22,15 @@ class TrainOutputAsset: ObservableObject {
     func getOutputDirectory() -> URL {
         return FileManager.default.temporaryDirectory.appendingPathComponent("outputs")
     }
-    func pushSnapshot(url: URL, iteration: Int, timestamp: Date) {
+    func pushSnapshot(
+        url: URL, iteration: Int, timestamp: Date,
+        renderCameraIntrinsics: RenderCameraIntrinsics? = nil
+    ) {
         DispatchQueue.main.async{
-            self.snapshots.append(TrainSnapshot(timestamp: timestamp, url: url, iteration: iteration))
+            self.snapshots.append(
+                TrainSnapshot(
+                    timestamp: timestamp, url: url, iteration: iteration,
+                    renderCameraIntrinsics: renderCameraIntrinsics))
         }
     }
     func loadSnapshotsFromDirectory() {
@@ -46,7 +53,9 @@ class TrainOutputAsset: ObservableObject {
             let attrs = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let timestamp = attrs?.contentModificationDate ?? Date()
 
-            return TrainSnapshot(timestamp: timestamp, url: url, iteration: iter)
+            return TrainSnapshot(
+                timestamp: timestamp, url: url, iteration: iter,
+                renderCameraIntrinsics: nil)
         }
         .sorted(by: { $0.iteration < $1.iteration })
 
@@ -60,8 +69,13 @@ class TrainViewModel: ObservableObject {
     var trainer: GaussianTrainer?
 }
 extension TrainViewModel: GaussianTrainerDelegate {
-    func pushSnapshot(url: URL, iteration: Int, timestamp: Date) {
-        TrainOutputAsset.shared.pushSnapshot(url: url, iteration: iteration, timestamp: timestamp)
+    func pushSnapshot(
+        url: URL, iteration: Int, timestamp: Date,
+        renderCameraIntrinsics: RenderCameraIntrinsics?
+    ) {
+        TrainOutputAsset.shared.pushSnapshot(
+            url: url, iteration: iteration, timestamp: timestamp,
+            renderCameraIntrinsics: renderCameraIntrinsics)
     }
 
     func pushLoss(

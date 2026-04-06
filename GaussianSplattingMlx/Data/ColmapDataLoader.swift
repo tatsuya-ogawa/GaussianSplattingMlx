@@ -34,14 +34,23 @@ private struct ColmapCamera {
     var k2: Double?
     var p1: Double?
     var p2: Double?
+
+    func getPinholeIntrinsics() -> PinholeIntrinsics {
+        PinholeIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy)
+    }
+
     func getIntrinsicsMatrix() -> simd_double3x3 {
-        var P = simd_double3x3()
-        P.columns = (
-            SIMD3<Double>(fx, 0, 0),
-            SIMD3<Double>(0, fy, 0),
-            SIMD3<Double>(cx, cy, 1),
-        )
-        return P
+        getPinholeIntrinsics().toSimdMatrix()
+    }
+
+    func getDistortion() -> CameraDistortion? {
+        CameraDistortion(
+            k1: k1 ?? 0,
+            k2: k2 ?? 0,
+            k3: 0,
+            p1: p1 ?? 0,
+            p2: p2 ?? 0
+        ).nonIdentity
     }
 }
 
@@ -92,74 +101,19 @@ class ColmapDataLoader {
     }
     func readImage(
         path: URL,
-        resizeFactor: Double
+        resizeFactor: Double,
+        intrinsics: PinholeIntrinsics? = nil,
+        distortion: CameraDistortion? = nil
     )
         -> (
             rgb: MLXArray, alpha: MLXArray, H: MLXArray, W: MLXArray
         )
     {
-        func resizeImage(_ image: UIImage, scale: Double) -> UIImage {
-            if scale == 1.0 { return image }
-            let newSize = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            let resized = UIGraphicsGetImageFromCurrentImageContext() ?? image
-            UIGraphicsEndImageContext()
-            return resized
-        }
-        func loadRGBA(path: URL, scale: Double) -> MLXArray {
-            guard let image = UIImage(contentsOfFile: path.path) else {
-                fatalError("Can not load image: \(path)")
-            }
-            let img = resizeImage(image, scale: scale)
-            guard let cgImage = img.cgImage else {
-                fatalError("CGImage transform failed")
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerPixel = 4
-            let bytesPerRow = bytesPerPixel * width
-            let totalBytes = height * bytesPerRow
-            var rawData = [UInt8](repeating: 0, count: totalBytes)
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let context = CGContext(
-                data: &rawData,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-            context?.draw(
-                cgImage,
-                in: CGRect(x: 0, y: 0, width: width, height: height)
-            )
-
-            var floatData = [Float]()
-            for i in 0..<(width * height) {
-                let offset = i * 4
-                floatData.append(Float(rawData[offset + 0]) / 255.0)  // R
-                floatData.append(Float(rawData[offset + 1]) / 255.0)  // G
-                floatData.append(Float(rawData[offset + 2]) / 255.0)  // B
-                floatData.append(Float(rawData[offset + 3]) / 255.0)  // A
-            }
-            return MLXArray(floatData, [height, width, 4])
-        }
-
-        let rgba = loadRGBA(path: path, scale: resizeFactor)
-        let rgb = rgba[.ellipsis, 0..<3]
-        let alpha = rgba[.ellipsis, 3]
-        let imageSize = rgb.shape
-
-        return (
-            rgb, alpha,
-            MLXArray(Float(imageSize[0])),
-            MLXArray(Float(imageSize[1]))
+        ImageRGBAReader.readImage(
+            path: path,
+            resizeFactor: resizeFactor,
+            intrinsics: intrinsics,
+            distortion: distortion
         )
     }
     private func colmapReadCamerasAndPoses(binRoot: URL, imageRoot: URL) throws -> (
@@ -327,6 +281,7 @@ class ColmapDataLoader {
     }
     private func readFrames(
         poses: [ImageWithPose],
+        camMap: [UInt32: ColmapCamera],
         resizeFactor: Double,
         whiteBackground: Bool
     ) -> (
@@ -340,9 +295,14 @@ class ColmapDataLoader {
         var rgbArray: [MLXArray] = []
         var alphaArray: [MLXArray] = []
         for pose in poses {
+            guard let camera = camMap[pose.cameraId] else {
+                fatalError("No matching camera")
+            }
             let (rgb, alpha, h, w) = readImage(
                 path: pose.fileURL,
-                resizeFactor: resizeFactor
+                resizeFactor: resizeFactor,
+                intrinsics: camera.getPinholeIntrinsics(),
+                distortion: camera.getDistortion()
             )
             rgbArray.append(rgb)
             alphaArray.append(alpha)
@@ -443,12 +403,12 @@ class ColmapDataLoader {
                 guard let camera = camMap[p.cameraId] else {
                     fatalError("No matching camera")
                 }
-                return camera.getIntrinsicsMatrix().toMLXArray()
+                return camera.getPinholeIntrinsics()
+                    .scaled(by: resizeFactor)
+                    .toSimdMatrix()
+                    .toMLXArray()
             }
         )
-        if resizeFactor != 1.0 {
-            intrinsics[.ellipsis, ..<2, ..<3] *= resizeFactor
-        }
         let c2ws = MLX.stacked(
             poses.map { p in
                 return p.pose.toMLXArray()
@@ -456,6 +416,7 @@ class ColmapDataLoader {
         )
         let (Hs, Ws, rgbArray, alphaArray) = readFrames(
             poses: poses,
+            camMap: camMap,
             resizeFactor: resizeFactor,
             whiteBackground: whiteBackground
         )
