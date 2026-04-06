@@ -45,13 +45,13 @@ float3x3 buildRotationMatrix(float4 quat) {
     
     float3x3 R;
     R[0][0] = 1 - 2 * (y * y + z * z);
-    R[0][1] = 2 * (x * y - r * z);
-    R[0][2] = 2 * (x * z + r * y);
-    R[1][0] = 2 * (x * y + r * z);
+    R[1][0] = 2 * (x * y - r * z);
+    R[2][0] = 2 * (x * z + r * y);
+    R[0][1] = 2 * (x * y + r * z);
     R[1][1] = 1 - 2 * (x * x + z * z);
-    R[1][2] = 2 * (y * z - r * x);
-    R[2][0] = 2 * (x * z - r * y);
-    R[2][1] = 2 * (y * z + r * x);
+    R[2][1] = 2 * (y * z - r * x);
+    R[0][2] = 2 * (x * z - r * y);
+    R[1][2] = 2 * (y * z + r * x);
     R[2][2] = 1 - 2 * (x * x + y * y);
     
     return R;
@@ -138,8 +138,8 @@ kernel void projectGaussians(
     float tanFovY = tan(camera.fovY * 0.5f);
     
     float3 t = viewPos.xyz;
-    float tx = t.x / clamp(t.z, -tanFovX * 1.3f, tanFovX * 1.3f) * t.z;
-    float ty = t.y / clamp(t.z, -tanFovY * 1.3f, tanFovY * 1.3f) * t.z;
+    float tx = clamp(t.x / t.z, -tanFovX * 1.3f, tanFovX * 1.3f) * t.z;
+    float ty = clamp(t.y / t.z, -tanFovY * 1.3f, tanFovY * 1.3f) * t.z;
     float tz = t.z;
     
     // Jacobian matrix

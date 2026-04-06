@@ -199,10 +199,8 @@ Cov2dValues buildCov2dFromCov3d(
 
     float tanFovX = tan(fovX * 0.5);
     float tanFovY = tan(fovY * 0.5);
-    float clipX = clamp(t2, -tanFovX * 1.3, tanFovX * 1.3);
-    float clipY = clamp(t2, -tanFovY * 1.3, tanFovY * 1.3);
-    float tx = t0 / clipX * t2;
-    float ty = t1 / clipY * t2;
+    float tx = clamp(t0 / t2, -tanFovX * 1.3, tanFovX * 1.3) * t2;
+    float ty = clamp(t1 / t2, -tanFovY * 1.3, tanFovY * 1.3) * t2;
     float tz = t2;
 
     float j00 = focalX / tz;
