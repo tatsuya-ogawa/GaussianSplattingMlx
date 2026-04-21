@@ -201,12 +201,15 @@ struct TrainView: View {
         let memoryLimit = Int(min(UInt64(cacheLimit) * 2, UInt64(Int.max)))
         MLX.Memory.cacheLimit = cacheLimit
         MLX.Memory.memoryLimit = memoryLimit
-        let sh_degree = 4
+        let safeShDegree = min(
+            max(shDegree, SHDegreeConfig.supportedRange.lowerBound),
+            SHDegreeConfig.supportedRange.upperBound
+        )
         let safeSampleCount = max(1, sampleCount)
         let safeIterationCount = max(1, iterationCount)
         let safeMaintenanceSettings = maintenanceSettings.sanitized()
         let gaussModel = GaussianTrainer.createModel(
-            sh_degree: sh_degree,
+            sh_degree: safeShDegree,
             pointCloud: pointCloud,
             sampleCount: safeSampleCount,
             manualClearCache: manualClearCache
@@ -216,7 +219,7 @@ struct TrainView: View {
             model: gaussModel,
             data: data.optimized(),
             gaussRender: GaussianRenderer(
-                active_sh_degree: sh_degree,
+                active_sh_degree: safeShDegree,
                 W: data.Ws[0].item(Int.self),
                 H: data.Hs[0].item(Int.self),
                 TILE_SIZE: TILE_SIZE,
@@ -241,6 +244,7 @@ struct TrainView: View {
     @State var isTraining: Bool = false
     @State var iterationCount: Int = 30000
     @State var sampleCount: Int = 1 << 14
+    @State var shDegree: Int = SHDegreeConfig.defaultValue
     @State var resizeFactor: Double = 0.5
     @State var originalWidth: Int = 0
     @State var originalHeight: Int = 0
@@ -390,6 +394,17 @@ struct TrainView: View {
                         .keyboardType(.numberPad)
                         .frame(width: 140)
                     }
+
+                    HStack {
+                        Text("SH Degree")
+                        Spacer(minLength: 12)
+                        Stepper("\(shDegree)", value: $shDegree, in: SHDegreeConfig.supportedRange)
+                            .frame(width: 180)
+                    }
+
+                    Text("Default is 3. Some scenes render more cleanly at lower SH degrees.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
 
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {

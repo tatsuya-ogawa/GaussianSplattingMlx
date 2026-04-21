@@ -1,26 +1,8 @@
+// Support shaders and helper kernels for `MetalGaussianRenderer`.
+// This file contains fullscreen presentation shaders plus radix/tile utilities.
+
 #include <metal_stdlib>
 using namespace metal;
-
-struct GaussianData {
-    float3 position;
-    float4 rotation;
-    float3 scale;
-    float opacity;
-    float3 sh_dc;
-    float3 sh_rest[15];
-};
-
-struct CameraParams {
-    float4x4 viewMatrix;
-    float4x4 projMatrix;
-    float3 cameraCenter;
-    float focalX;
-    float focalY;
-    float fovX;
-    float fovY;
-    int width;
-    int height;
-};
 
 struct ProjectedGaussian {
     float2 mean2d;
@@ -29,12 +11,6 @@ struct ProjectedGaussian {
     float alpha;
     float depth;
     uint originalIndex;
-};
-
-struct TileInfo {
-    uint2 tileCoord;
-    uint gaussianCount;
-    uint gaussianOffset;
 };
 
 struct VertexIn {
