@@ -124,13 +124,18 @@ struct TrainView: View {
                 throw NSError(domain: "No zip", code: 2)
             }
             return UserNerfStudioDataLoader(zipUrl: url)
+        case .nerfSynthetic:
+            guard let url = selected.url else {
+                throw NSError(domain: "No zip", code: 3)
+            }
+            return UserNerfSyntheticDataLoader(zipUrl: url)
         case .demo(let kind):
             switch kind {
 
             case .chair:
                 return BlenderDemoDataLoader()
-            case .lego:
-                return DemoColmapDataLoader()
+            case .hotdog:
+                return DemoNerfSyntheticDataLoader()
             }
         }
     }
@@ -603,7 +608,7 @@ struct TrainView: View {
 extension SelectedDataSet {
     var isValid: Bool {
         switch format {
-        case .colmap, .nerfstudio:
+        case .colmap, .nerfstudio, .nerfSynthetic:
             return url != nil
         case .demo:
             return true

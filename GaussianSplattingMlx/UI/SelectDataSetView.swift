@@ -7,19 +7,21 @@ struct SelectedDataSet: Equatable {
 }
 enum DemoKind: String, CaseIterable, Identifiable {
     case chair = "Chair"
-    case lego = "Lego"
+    case hotdog = "Hotdog"
     var id: String { self.rawValue }
 }
 
 enum FileFormat: Equatable, Identifiable, Hashable {
     case colmap
     case nerfstudio
+    case nerfSynthetic
     case demo(DemoKind)
 
     var id: String {
         switch self {
         case .colmap: return "colmap"
         case .nerfstudio: return "nerfstudio"
+        case .nerfSynthetic: return "nerfSynthetic"
         case .demo(let kind): return "demo_\(kind.rawValue)"
         }
     }
@@ -28,6 +30,7 @@ enum FileFormat: Equatable, Identifiable, Hashable {
         switch self {
         case .colmap: return "Colmap"
         case .nerfstudio: return "NerfStudio"
+        case .nerfSynthetic: return "NeRF Synthetic"
         case .demo(let kind): return "Demo: \(kind.rawValue)"
         }
     }
@@ -73,6 +76,7 @@ struct SelectDataSetView: View {
         [
             .colmap,
             .nerfstudio,
+            .nerfSynthetic,
         ] + DemoKind.allCases.map { .demo($0) }
     @State private var showPicker = false
     @State private var pickedFile: URL?
@@ -92,7 +96,7 @@ struct SelectDataSetView: View {
             .padding(.horizontal)
 
             switch selected.format {
-            case .colmap, .nerfstudio:
+            case .colmap, .nerfstudio, .nerfSynthetic:
                 Button("Select dataset(.zip") {
                     showPicker = true
                 }
