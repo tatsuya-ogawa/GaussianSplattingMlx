@@ -119,7 +119,7 @@ struct TrainView: View {
                 throw NSError(domain: "No zip", code: 1)
             }
             return UserColmapDataLoader(zipUrl: url)
-        case .nerfstudio:
+        case .nerfStudio:
             guard let url = selected.url else {
                 throw NSError(domain: "No zip", code: 2)
             }
@@ -608,7 +608,7 @@ struct TrainView: View {
 extension SelectedDataSet {
     var isValid: Bool {
         switch format {
-        case .colmap, .nerfstudio, .nerfSynthetic:
+        case .colmap, .nerfStudio, .nerfSynthetic:
             return url != nil
         case .demo:
             return true
