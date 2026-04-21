@@ -8,6 +8,11 @@
 import Foundation
 import MLX
 
+enum SHDegreeConfig {
+    static let defaultValue = 3
+    static let supportedRange = 0...4
+}
+
 func distTopK(_ X: MLXArray, k: Int, manualClearCache: Bool = GaussianTrainer.needEagerClearCache()) -> MLXArray {
     // X1: [N, 1, 3], X2: [1, N, 3]
     let chunkSize: Int = 1 << 8
@@ -64,7 +69,7 @@ class GaussModel {
         ]
     }
 
-    init(sh_degree: Int = 3, debug: Bool = false) {
+    init(sh_degree: Int = SHDegreeConfig.defaultValue, debug: Bool = false) {
         self.max_sh_degree = sh_degree
         self._xyz = MLXArray.zeros([0, 3])
         self._features_dc = MLXArray.zeros([0, 3, 1])
@@ -86,7 +91,7 @@ class GaussModel {
 
     static func create_from_pcd(
         pcd: PointCloud,
-        sh_degree: Int = 3,
+        sh_degree: Int = SHDegreeConfig.defaultValue,
         debug: Bool = false,
         manualClearCache: Bool = GaussianTrainer.needEagerClearCache()
     ) -> GaussModel {

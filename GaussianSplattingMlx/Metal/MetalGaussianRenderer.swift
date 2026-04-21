@@ -11,7 +11,9 @@ struct MetalGaussianData {
     var sh_dc: SIMD3<Float>
     var sh_rest: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>,
                   SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>,
-                  SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)
+                  SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>,
+                  SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>,
+                  SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)
 }
 
 struct MetalCameraParams {
@@ -36,6 +38,11 @@ struct MetalProjectedGaussian {
 }
 
 final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
+    static let maxSupportedSHDegree = SHDegreeConfig.supportedRange.upperBound
+    static let defaultSHDegree = SHDegreeConfig.defaultValue
+    private static let maxSHCoefficientCount = (maxSupportedSHDegree + 1) * (maxSupportedSHDegree + 1)
+    private static let maxSHRestCoefficientCount = maxSHCoefficientCount - 1
+
     private struct FullscreenVertex {
         var position: SIMD2<Float>
         var texCoord: SIMD2<Float>
@@ -46,7 +53,7 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     private let library: MTLLibrary
     
     // Compute pipelines
-    private let projectGaussiansPipeline: MTLComputePipelineState
+    private let projectGaussiansPipelines: [Int: MTLComputePipelineState]
     private let sortPipeline: MTLComputePipelineState
     private let renderTilesPipeline: MTLComputePipelineState
     private let assignTilesPipeline: MTLComputePipelineState
@@ -85,8 +92,12 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     private let maxGaussiansPerTile: UInt32
     private var loadedGaussianCount: Int = 0
     private var preparedSortCount: Int = 0
+    private var loadedSceneMaxShDegree: Int32 = Int32(MetalGaussianRenderer.maxSupportedSHDegree)
+    private var activeShDegree: Int32 = Int32(MetalGaussianRenderer.defaultSHDegree)
     
     var metalDevice: MTLDevice { device }
+
+    private static let projectGaussiansSHDegreeFunctionConstantIndex = 0
     
     init?(maxGaussians: Int = 1000000, tileSize: SIMD2<UInt32> = SIMD2<UInt32>(64, 64), maxGaussiansPerTile: UInt32 = 16384) {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -119,8 +130,7 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         }
         
         // Create compute pipelines
-        guard let projectFunction = library.makeFunction(name: "projectGaussians"),
-              let sortFunction = library.makeFunction(name: "sortGaussiansByDepth"),
+        guard let sortFunction = library.makeFunction(name: "sortGaussiansByDepth"),
               let renderFunction = library.makeFunction(name: "renderTiles"),
               let assignFunction = library.makeFunction(name: "assignGaussiansToTiles"),
               let clearFunction = library.makeFunction(name: "clearBuffers"),
@@ -133,7 +143,10 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         }
         
         do {
-            self.projectGaussiansPipeline = try device.makeComputePipelineState(function: projectFunction)
+            self.projectGaussiansPipelines = try Self.makeProjectGaussiansPipelines(
+                device: device,
+                library: library
+            )
             self.sortPipeline = try device.makeComputePipelineState(function: sortFunction)
             self.renderTilesPipeline = try device.makeComputePipelineState(function: renderFunction)
             self.assignTilesPipeline = try device.makeComputePipelineState(function: assignFunction)
@@ -178,6 +191,28 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         
         super.init()
         allocateBuffers()
+    }
+
+    private static func makeProjectGaussiansPipelines(
+        device: MTLDevice,
+        library: MTLLibrary
+    ) throws -> [Int: MTLComputePipelineState] {
+        var pipelines: [Int: MTLComputePipelineState] = [:]
+        for shDegree in SHDegreeConfig.supportedRange {
+            let constantValues = MTLFunctionConstantValues()
+            var shDegreeValue = Int32(shDegree)
+            constantValues.setConstantValue(
+                &shDegreeValue,
+                type: .int,
+                index: projectGaussiansSHDegreeFunctionConstantIndex
+            )
+            let specializedFunction = try library.makeFunction(
+                name: "projectGaussians",
+                constantValues: constantValues
+            )
+            pipelines[shDegree] = try device.makeComputePipelineState(function: specializedFunction)
+        }
+        return pipelines
     }
     
     private func allocateBuffers() {
@@ -229,7 +264,23 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
     func clearScene() {
         loadedGaussianCount = 0
         preparedSortCount = 0
+        loadedSceneMaxShDegree = Int32(Self.maxSupportedSHDegree)
         clearFrame()
+    }
+
+    var maxLoadedSHDegree: Int {
+        Int(loadedSceneMaxShDegree)
+    }
+
+    var currentActiveSHDegree: Int {
+        Int(activeShDegree)
+    }
+
+    @discardableResult
+    func setActiveSHDegree(_ degree: Int) -> Int {
+        let clampedDegree = min(max(degree, 0), Int(loadedSceneMaxShDegree))
+        activeShDegree = Int32(clampedDegree)
+        return clampedDegree
     }
     
     @discardableResult
@@ -440,10 +491,17 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         let opacityArray = opacity.asArray(Float.self)
         let scalesArray = scales.asArray(Float.self)
         let rotationsArray = rotations.asArray(Float.self)
+        let shCoefficientCount = shs.shape[1]
+        loadedSceneMaxShDegree = Self.inferSHDegree(fromCoefficientCount: shCoefficientCount)
+        _ = setActiveSHDegree(Int(activeShDegree))
+        let availableRestCoefficientCount = max(
+            0,
+            min(shCoefficientCount - 1, Self.maxSHRestCoefficientCount)
+        )
         
         for i in 0..<numGaussians {
             let baseIdx = i * 3
-            let shBaseIdx = i * shs.shape[1] * 3
+            let shBaseIdx = i * shCoefficientCount * 3
             let quatIdx = i * 4
             
             gaussianData[i].position = SIMD3<Float>(
@@ -473,16 +531,33 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
                 shsArray[shBaseIdx + 1],
                 shsArray[shBaseIdx + 2]
             )
-            
-            // Initialize sh_rest with remaining coefficients (simplified)
+
+            var shRest = Array(
+                repeating: SIMD3<Float>(repeating: 0),
+                count: Self.maxSHRestCoefficientCount
+            )
+            for coefficientIndex in 0..<availableRestCoefficientCount {
+                let coeffBaseIdx = shBaseIdx + (coefficientIndex + 1) * 3
+                shRest[coefficientIndex] = SIMD3<Float>(
+                    shsArray[coeffBaseIdx],
+                    shsArray[coeffBaseIdx + 1],
+                    shsArray[coeffBaseIdx + 2]
+                )
+            }
+
             gaussianData[i].sh_rest = (
-                SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0),
-                SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0),
-                SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0),
-                SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0),
-                SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0), SIMD3<Float>(0, 0, 0)
+                shRest[0], shRest[1], shRest[2], shRest[3], shRest[4], shRest[5],
+                shRest[6], shRest[7], shRest[8], shRest[9], shRest[10], shRest[11],
+                shRest[12], shRest[13], shRest[14], shRest[15], shRest[16], shRest[17],
+                shRest[18], shRest[19], shRest[20], shRest[21], shRest[22], shRest[23]
             )
         }
+    }
+
+    private static func inferSHDegree(fromCoefficientCount coefficientCount: Int) -> Int32 {
+        guard coefficientCount > 0 else { return 0 }
+        let inferredDegree = max(0, Int(Double(coefficientCount).squareRoot()) - 1)
+        return Int32(min(inferredDegree, maxSupportedSHDegree))
     }
     
     private func prepareCameraParams(camera: Camera, width: Int, height: Int) -> MetalCameraParams {
@@ -543,7 +618,9 @@ final class MetalGaussianRenderer: NSObject, MTKViewDelegate {
         guard let computeEncoder = commandBuffer.makeComputeCommandEncoder(),
               let gaussianBuffer = gaussianBuffer,
               let projectedGaussianBuffer = projectedGaussianBuffer,
-              let visibilityMaskBuffer = visibilityMaskBuffer else { return }
+              let visibilityMaskBuffer = visibilityMaskBuffer,
+              let projectGaussiansPipeline = projectGaussiansPipelines[Int(activeShDegree)]
+        else { return }
         
         computeEncoder.setComputePipelineState(projectGaussiansPipeline)
         computeEncoder.setBuffer(gaussianBuffer, offset: 0, index: 0)

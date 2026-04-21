@@ -73,11 +73,13 @@ private func lookAt(eye: simd_double3, center: simd_double3, up: simd_double3)
 class RenderViewModel: ObservableObject {
     let width: Int
     let height: Int
+    @Published private(set) var activeShDegree: Int = SHDegreeConfig.defaultValue
+    @Published private(set) var maxSceneShDegree: Int = SHDegreeConfig.supportedRange.upperBound
     
     private let metalRenderer: MetalGaussianRenderer?
     
     private lazy var gaussRender = GaussianRenderer(
-        active_sh_degree: 4,
+        active_sh_degree: SHDegreeConfig.defaultValue,
         W: width,
         H: height,
         TILE_SIZE: TILE_SIZE_H_W(w: 64, h: 64),
@@ -90,6 +92,9 @@ class RenderViewModel: ObservableObject {
         self.width = width
         self.height = height
         self.metalRenderer = MetalGaussianRenderer(maxGaussians: 1000000, tileSize: SIMD2<UInt32>(64, 64))
+        if let metalRenderer {
+            self.activeShDegree = metalRenderer.setActiveSHDegree(SHDegreeConfig.defaultValue)
+        }
         if self.metalRenderer == nil {
             print("RenderViewModel: Metal renderer initialization failed.")
         }
@@ -157,8 +162,9 @@ class RenderViewModel: ObservableObject {
     func load(
         url: URL,
         renderCameraIntrinsics: RenderCameraIntrinsics? = nil,
-        usePlyRenderCameraIntrinsics: Bool = false
-    ) throws {
+        usePlyRenderCameraIntrinsics: Bool = false,
+        preferredShDegree: Int = SHDegreeConfig.defaultValue
+    ) throws -> Int {
         let plyData = try PlyWriter.loadGaussianBinaryPLYAsMLXWithMetadata(from: url)
         let (_xyz, _features_dc, _features_rest, _opacity, _scales, _rotation) = (
             plyData.positions,
@@ -181,6 +187,18 @@ class RenderViewModel: ObservableObject {
             scales: scales,
             rotations: rotations
         ) ?? false
+        let appliedShDegree = metalRenderer?.setActiveSHDegree(preferredShDegree)
+            ?? min(
+                max(preferredShDegree, SHDegreeConfig.supportedRange.lowerBound),
+                SHDegreeConfig.supportedRange.upperBound
+            )
+        let maxSceneShDegree = metalRenderer?.maxLoadedSHDegree
+            ?? SHDegreeConfig.supportedRange.upperBound
+
+        DispatchQueue.main.async {
+            self.activeShDegree = appliedShDegree
+            self.maxSceneShDegree = maxSceneShDegree
+        }
 
         setInitialCamera(
             boundingBox: calcBoundingBox(xyzArray: _xyz),
@@ -189,6 +207,7 @@ class RenderViewModel: ObservableObject {
             renderCameraIntrinsics: renderCameraIntrinsics
                 ?? (usePlyRenderCameraIntrinsics ? plyData.renderCameraIntrinsics : nil)
         )
+        return appliedShDegree
     }
     func render(force: Bool = false) {
         let now = CACurrentMediaTime()
@@ -202,6 +221,22 @@ class RenderViewModel: ObservableObject {
     func clearRenderedFrame() {
         hasUploadedScene = false
         metalRenderer?.clearScene()
+        DispatchQueue.main.async {
+            self.maxSceneShDegree = SHDegreeConfig.supportedRange.upperBound
+        }
+    }
+
+    @discardableResult
+    func setActiveSHDegree(_ degree: Int) -> Int {
+        let appliedShDegree = metalRenderer?.setActiveSHDegree(degree)
+            ?? min(
+                max(degree, SHDegreeConfig.supportedRange.lowerBound),
+                SHDegreeConfig.supportedRange.upperBound
+            )
+        DispatchQueue.main.async {
+            self.activeShDegree = appliedShDegree
+        }
+        return appliedShDegree
     }
     
     private func renderWithMetal() {
@@ -267,6 +302,7 @@ struct RenderView: View {
     let usePlyRenderCameraIntrinsics: Bool
     private let renderQueue = DispatchQueue(label: "com.GaussianSplattingMlX.renderqueue")
     @Binding var url: URL?
+    @State private var selectedShDegree: Int = SHDegreeConfig.defaultValue
     @State private var lastDrag: CGSize = .zero
     @StateObject var viewModel: RenderViewModel
     init(
@@ -291,7 +327,25 @@ struct RenderView: View {
         )
     }
     var body: some View {
-        VStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Render SH Degree")
+                Spacer(minLength: 12)
+                Stepper(
+                    "\(selectedShDegree)",
+                    value: $selectedShDegree,
+                    in: SHDegreeConfig.supportedRange.lowerBound...max(
+                        viewModel.maxSceneShDegree,
+                        SHDegreeConfig.supportedRange.lowerBound
+                    )
+                )
+                .frame(width: 180)
+            }
+
+            Text("Loaded max: \(viewModel.maxSceneShDegree)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
             if let renderer = viewModel.activeRenderer {
                 ZStack(alignment: .bottomTrailing) {
                     MetalTextureView(
@@ -362,11 +416,15 @@ struct RenderView: View {
             if let url = newValue {
                 renderQueue.async {
                     do {
-                        try viewModel.load(
+                        let appliedShDegree = try viewModel.load(
                             url: url,
                             renderCameraIntrinsics: renderCameraIntrinsics,
-                            usePlyRenderCameraIntrinsics: usePlyRenderCameraIntrinsics
+                            usePlyRenderCameraIntrinsics: usePlyRenderCameraIntrinsics,
+                            preferredShDegree: selectedShDegree
                         )
+                        DispatchQueue.main.async {
+                            selectedShDegree = appliedShDegree
+                        }
                         viewModel.updateCamera()
                         viewModel.render(force: true)
                     } catch {
@@ -376,6 +434,22 @@ struct RenderView: View {
             } else {
                 viewModel.clearRenderedFrame()
             }
+        }
+        .onChange(of: selectedShDegree) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            renderQueue.async {
+                let appliedShDegree = viewModel.setActiveSHDegree(newValue)
+                if appliedShDegree != newValue {
+                    DispatchQueue.main.async {
+                        selectedShDegree = appliedShDegree
+                    }
+                }
+                viewModel.render(force: true)
+            }
+        }
+        .onChange(of: viewModel.activeShDegree) { oldValue, newValue in
+            guard selectedShDegree != newValue else { return }
+            selectedShDegree = newValue
         }
     }
 }

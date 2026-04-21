@@ -1,3 +1,6 @@
+// Main projection and raster kernels for `MetalGaussianRenderer`.
+// This file owns SH color evaluation, projection, depth reordering, and tile compositing.
+
 #include <metal_stdlib>
 using namespace metal;
 
@@ -7,7 +10,7 @@ struct GaussianData {
     float3 scale;
     float opacity;
     float3 sh_dc;
-    float3 sh_rest[15];
+    float3 sh_rest[24];
 };
 
 struct CameraParams {
@@ -36,6 +39,8 @@ struct TileInfo {
     uint gaussianCount;
     uint gaussianOffset;
 };
+
+constant int kActiveShDegree [[function_constant(0)]];
 
 float3x3 buildRotationMatrix(float4 quat) {
     float norm = length(quat);
@@ -69,19 +74,78 @@ float3x3 buildCovariance3D(float3 scale, float4 rotation) {
     return L * transpose(L);
 }
 
-float3 computeColor(float3 position, float3 sh_dc, device const float3* sh_rest, float3 cameraCenter, int activeShDegree) {
+float3 computeColor(float3 position, float3 sh_dc, thread const float3* sh_rest, float3 cameraCenter) {
+    const float SH_C0 = 0.28209479177387814f;
+    const float SH_C1 = 0.4886025119029199f;
+    const float SH_C2[5] = {
+        1.0925484305920792f,
+        -1.0925484305920792f,
+        0.31539156525252005f,
+        -1.0925484305920792f,
+        0.5462742152960396f,
+    };
+    const float SH_C3[7] = {
+        -0.5900435899266435f,
+        2.890611442640554f,
+        -0.4570457994644658f,
+        0.3731763325901154f,
+        -0.4570457994644658f,
+        1.445305721320277f,
+        -0.5900435899266435f,
+    };
+    const float SH_C4[9] = {
+        2.5033429417967046f,
+        -1.7701307697799304f,
+        0.9461746957575601f,
+        -0.6690465435572892f,
+        0.10578554691520431f,
+        -0.6690465435572892f,
+        0.47308734787878004f,
+        -1.7701307697799304f,
+        0.6258357354491761f,
+    };
+
     float3 dir = normalize(position - cameraCenter);
-    float3 color = sh_dc + 0.5f;
+    float3 color = SH_C0 * sh_dc + 0.5f;
     
-    if (activeShDegree > 0) {
+    if (kActiveShDegree > 0) {
         float x = dir.x, y = dir.y, z = dir.z;
-        color += sh_rest[0] * (-y) + sh_rest[1] * z + sh_rest[2] * (-x);
+        color += -SH_C1 * y * sh_rest[0] + SH_C1 * z * sh_rest[1] - SH_C1 * x * sh_rest[2];
         
-        if (activeShDegree > 1) {
+        if (kActiveShDegree > 1) {
             float xx = x * x, yy = y * y, zz = z * z;
             float xy = x * y, yz = y * z, xz = x * z;
-            color += sh_rest[3] * (xy) + sh_rest[4] * (yz) + sh_rest[5] * (2.0f * zz - xx - yy) + 
-                     sh_rest[6] * (xz) + sh_rest[7] * (xx - yy);
+            color += SH_C2[0] * xy * sh_rest[3]
+                   + SH_C2[1] * yz * sh_rest[4]
+                   + SH_C2[2] * (2.0f * zz - xx - yy) * sh_rest[5]
+                   + SH_C2[3] * xz * sh_rest[6]
+                   + SH_C2[4] * (xx - yy) * sh_rest[7];
+        }
+
+        if (kActiveShDegree > 2) {
+            float xx = x * x, yy = y * y, zz = z * z;
+            float xy = x * y;
+            color += SH_C3[0] * y * (3.0f * xx - yy) * sh_rest[8]
+                   + SH_C3[1] * xy * z * sh_rest[9]
+                   + SH_C3[2] * y * (4.0f * zz - xx - yy) * sh_rest[10]
+                   + SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh_rest[11]
+                   + SH_C3[4] * x * (4.0f * zz - xx - yy) * sh_rest[12]
+                   + SH_C3[5] * z * (xx - yy) * sh_rest[13]
+                   + SH_C3[6] * x * (xx - 3.0f * yy) * sh_rest[14];
+        }
+
+        if (kActiveShDegree > 3) {
+            float xx = x * x, yy = y * y, zz = z * z;
+            float xy = x * y, yz = y * z, xz = x * z;
+            color += SH_C4[0] * xy * (xx - yy) * sh_rest[15]
+                   + SH_C4[1] * yz * (3.0f * xx - yy) * sh_rest[16]
+                   + SH_C4[2] * xy * (7.0f * zz - 1.0f) * sh_rest[17]
+                   + SH_C4[3] * yz * (7.0f * zz - 3.0f) * sh_rest[18]
+                   + SH_C4[4] * (zz * (35.0f * zz - 30.0f) + 3.0f) * sh_rest[19]
+                   + SH_C4[5] * xz * (7.0f * zz - 3.0f) * sh_rest[20]
+                   + SH_C4[6] * (xx - yy) * (7.0f * zz - 1.0f) * sh_rest[21]
+                   + SH_C4[7] * xz * (xx - 3.0f * yy) * sh_rest[22]
+                   + SH_C4[8] * (xx * (xx - 3.0f * yy) - yy * (3.0f * xx - yy)) * sh_rest[23];
         }
     }
     
@@ -178,8 +242,16 @@ kernel void projectGaussians(
         visibilityMask[id] = 1;
         
         // Compute color (SH DC band)
-        const float SH_C0 = 0.28209479177387814f;
-        float3 color = clamp(SH_C0 * gaussian.sh_dc + 0.5f, 0.0f, 1.0f);
+        float3 color = clamp(
+            computeColor(
+                gaussian.position,
+                gaussian.sh_dc,
+                gaussian.sh_rest,
+                camera.cameraCenter
+            ),
+            0.0f,
+            1.0f
+        );
         
         // Store projected data
         projectedGaussians[id].mean2d = screenPos;
