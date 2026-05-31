@@ -12,7 +12,8 @@ Gaussian Splatting is a novel approach to Neural Radiance Fields (NeRF) that off
 
 This implementation is based on:
 * **Methodology:** The core algorithms, mathematical formulas, and training pipelines are based on the original research paper: *"3D Gaussian Splatting for Real-Time Radiance Field Rendering"* (Kerbl et al., 2023).
-* **Implementation Reference:** The structural design of the PyTorch pipeline was heavily inspired by the open-source repository [torch-splatting](https://github.com/hbb1/torch-splatting).
+* **Implementation Reference:** The structural design of the PyTorch pipeline was heavily inspired by the open-source repository [torch-splatting](https://github.com/hbb1/torch-splatting).[gsplat](https://github.com/nerfstudio-project/gsplat)
+* **See Also:** For alternative 3DGS implementations in PyTorch, check out [gsplat](https://github.com/nerfstudio-project/gsplat).
 
 ## Implemented Features
 
